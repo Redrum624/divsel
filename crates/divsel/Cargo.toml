@@ -17,9 +17,13 @@ categories = ["algorithms", "science"]
 bench = false
 
 [features]
-# Adds the n = 100_000 and n = 1_000_000 benchmark groups. They are opt-in
-# because their setup alone -- generating up to 3 GiB of Gaussian points and
-# scanning for a diameter -- takes minutes before any measurement starts.
+# The heavy benchmark tier: every `gist/facility_location` group (including
+# n = 10_000, whose iterations run 84-245 s), `gist/linear/n=100000` with the
+# exact diameter, and `gist/linear/n=1000000`. Opt-in because that tier is hours
+# long and its setup alone -- up to 3 GiB of Gaussian points, plus an O(n^2)
+# diameter scan -- takes minutes before any measurement starts. Without it,
+# `cargo bench -p divsel` is the kernels plus `gist/linear/n=10000`, which is
+# single-digit minutes. See the header of `benches/gist.rs` for the full table.
 bench-large = []
 
 [dependencies]
@@ -32,3 +36,8 @@ criterion = "0.8"
 [[bench]]
 name = "gist"
 harness = false
+# criterion's harness has a libtest-compatible test mode, and `cargo test
+# --all-targets` would use it to run every benchmark once -- including the
+# `bench-large` fixtures, which allocate gigabytes before they measure anything.
+# Benchmarks are not tests here; `test = false` keeps them out of that run.
+test = false

@@ -29,6 +29,18 @@
 //! statistical or structural assertions that carry headroom -- an independence
 //! property, an agreement between two code paths, a count with slack -- and
 //! reach for the integer draws when a test needs to pin bytes.
+//!
+//! # Re-exports for benches
+//!
+//! [`dot_scalar`] and [`sq_euclid_scalar`] are the crate's own scalar distance
+//! kernels, re-exported here **for `benches/gist.rs` only**. The benchmark's
+//! headline number is the dispatched kernel divided by the scalar one, so the
+//! denominator has to be the real body: a copy in the bench file is a copy that
+//! can drift away from the thing `metric`'s parity test pins. They carry the
+//! same stability promise as the rest of this module, which is none.
+
+#[doc(hidden)]
+pub use crate::metric::{dot_scalar, sq_euclid_scalar};
 
 /// [SplitMix64], the reference finalizer used to seed `xoshiro`, as a small
 /// standalone generator.

@@ -385,13 +385,17 @@ fn better_pair(a: (f32, usize, usize), b: (f32, usize, usize)) -> (f32, usize, u
 ///
 /// # Cost
 ///
-/// `1 + |D|` calls to [`greedy_independent_set`], plus one diameter scan. The
+/// `2 + |D|` calls to [`greedy_independent_set`], plus one diameter scan. The
 /// `|D|` sweep calls are independent, so they run on the `rayon` thread pool,
 /// each worker holding its own [`Utility::boxed_clone`] of `util`; only the fold
 /// that picks the winner is sequential, because its tie rule is order dependent.
-/// The sweep therefore materialises one candidate selection per threshold --
-/// `O(|D| * k)` indices -- before folding, which is nothing for the geometric
-/// set and worth knowing about for the exhaustive one.
+/// The sweep keeps **no** candidate selection: each threshold contributes one
+/// `(d, f, g, div)` tuple of scalars, 24 bytes, so the peak extra memory is
+/// `24 * |D|` bytes independent of `k` -- about 48 MB at the `n = 2000` ceiling
+/// of [`GistConfig::exhaustive_thresholds`], and under a kilobyte for the
+/// geometric set. The winning selection is then recovered by one extra greedy
+/// run on the threshold the fold chose (the `+2` above, with the line-2 call),
+/// which is bit-for-bit the selection that threshold produced during the sweep.
 /// With the geometric set that is `O(n * k * log_{1+eps}(1/eps))` marginal
 /// evaluations, the bound of Theorem 3.1. With
 /// [`GistConfig::exhaustive_thresholds`] the set has up to `n*(n-1)/2 + 1`
@@ -523,15 +527,28 @@ pub fn gist(
         // can keep the GIST-submod subset selection runtime the same as the
         // submod algorithm" -- so the greedy runs go on the `rayon` pool.
         //
+        // Only the four **scalars** a threshold produces are collected, never its
+        // selection: 24 bytes per threshold instead of a `Vec<usize>` of up to
+        // `k` indices. With `exhaustive_thresholds` at n = 2000 the set holds
+        // `n*(n-1)/2 + 1` entries, so keeping the selections would cost about
+        // 1.6 GB at k = 100 against 48 MB for the scalars -- and the sequential
+        // sweep this replaced only ever held the incumbent.
+        //
         // `util` is reset first and then shared immutably as the prototype every
         // worker clones from, so no worker ever sees another's selection state.
-        // `map_init` clones once per worker rather than once per threshold;
-        // `greedy_independent_set` resets what it is handed, so reusing a clone
-        // across the thresholds a worker happens to receive is safe, and the
+        // `map_init` clones once per rayon **job**, not once per thread. Rayon's
+        // own wording: `init` "will be called only as needed for a value to be
+        // paired with the group of items in each rayon job", and how many jobs an
+        // indexed parallel iterator is split into is the pool's adaptive
+        // splitting decision, not the thread count. So do not size memory off
+        // `rayon::current_num_threads()` -- there can be more live clones than
+        // threads, and a `FacilityLocation` clone carries a `Vec<f64>` of length
+        // n. `greedy_independent_set` resets what it is handed, so reusing a
+        // clone across the thresholds one job happens to cover is safe, and the
         // determinism test pins that.
         util.reset();
         let prototype: &dyn Utility = &*util;
-        let scanned: Vec<(f32, Vec<usize>, f64, f64, f32)> = set
+        let scanned: Vec<(f32, f64, f64, f32)> = set
             .par_iter()
             .map_init(
                 || prototype.boxed_clone(),
@@ -539,7 +556,7 @@ pub fn gist(
                     let candidate = greedy_independent_set(pts, worker.as_mut(), d, k);
                     let (f_candidate, g_candidate, div_candidate) =
                         evaluate(&candidate, worker.as_mut());
-                    (d, candidate, f_candidate, g_candidate, div_candidate)
+                    (d, f_candidate, g_candidate, div_candidate)
                 },
             )
             .collect();
@@ -548,16 +565,30 @@ pub fn gist(
         // compares **non-strictly**, exactly as a sequential sweep would: the
         // largest threshold attaining the best f is the one that survives. The
         // fold stays sequential precisely because that tie rule is order
-        // dependent -- a parallel reduction would have to re-derive it.
-        for (d, candidate, f_candidate, g_candidate, div_candidate) in scanned {
+        // dependent -- a parallel reduction would have to re-derive it, and a
+        // lexicographic `(f, d)` maximum would also disagree with `>=` on a `NaN`
+        // marginal.
+        let mut winner = None;
+        for (d, f_candidate, g_candidate, div_candidate) in scanned {
             if f_candidate >= f_value {
-                selected = candidate;
                 f_value = f_candidate;
                 g_value = g_candidate;
                 div_value = div_candidate;
                 stage = Stage::Sweep;
                 threshold = d;
+                winner = Some(d);
             }
+        }
+
+        // Recover the winning selection with one extra greedy run rather than
+        // having carried every candidate through the fold. It is the same
+        // selection bit for bit: `greedy_independent_set` resets the utility it
+        // is handed (`run_scan` and `run_celf` both open with `util.reset()`), so
+        // it is a pure function of `(pts, d, k)` and the utility's cloned
+        // identity -- which is what the worker's `boxed_clone` of the same reset
+        // `util` was.
+        if let Some(d) = winner {
+            selected = greedy_independent_set(pts, util, d, k);
         }
     }
 
@@ -1390,16 +1421,184 @@ mod tests {
         );
     }
 
+    /// One pinned [`GistResult`], in the struct's own field order minus
+    /// [`Stage`], which is [`Stage::Sweep`] for every case below.
+    type Pin = (&'static [usize], f64, f64, f32, f32, f32);
+
+    /// Compares a whole [`GistResult`] against a [`Pin`], floats included --
+    /// `f32`/`f64` equality is exact, so this pins bytes, not a tolerance.
+    fn assert_pin(label: &str, got: &GistResult, want: Pin) {
+        let (selected, f_value, g_value, div, threshold, d_max) = want;
+        assert_eq!(
+            *got,
+            GistResult {
+                selected: selected.to_vec(),
+                f_value,
+                g_value,
+                div,
+                threshold,
+                stage: Stage::Sweep,
+                d_max,
+            },
+            "{label}: the sweep no longer reproduces its pinned result"
+        );
+    }
+
+    /// Exact-value regression pin for the sweep, captured at `aa89e4b` — before
+    /// the sweep stopped materialising one candidate selection per threshold and
+    /// started recovering the winner with a second greedy run. Every field of
+    /// every result is compared, so that refactor (or any successor) has to
+    /// reproduce these bytes or fail here.
+    ///
+    /// The coordinates come from [`SplitMix64::next_f32`] and the weights from
+    /// [`SplitMix64::uniform_weights`] — exact integer-derived draws.
+    /// `testutil`'s platform-determinism note forbids backing an exact-value
+    /// fixture with Gaussian draws, whose `ln`/`cos` have unspecified precision.
+    /// Both threshold sets and both stock utilities are covered; the two
+    /// exhaustive cases win on a *different* threshold from their geometric
+    /// twins, which is what makes the winning-`d` recovery observable.
+    #[test]
+    fn the_sweep_reproduces_the_pinned_results() {
+        // (n, dim, seed, [Linear geometric, FacilityLocation geometric,
+        //                 Linear exhaustive, FacilityLocation exhaustive])
+        let cases: [(usize, usize, u64, [Pin; 4]); 2] = [
+            (
+                12,
+                3,
+                0xa11c,
+                [
+                    (
+                        &[8, 0, 2, 3],
+                        3.624490997546277,
+                        3.2698466393881653,
+                        0.47285914,
+                        0.45878828,
+                        1.3921658,
+                    ),
+                    (
+                        &[4, 3, 10, 0],
+                        10.272350645947645,
+                        9.917706287789533,
+                        0.47285914,
+                        0.45878828,
+                        1.3921658,
+                    ),
+                    (
+                        &[8, 0, 2, 1],
+                        3.6273397784245063,
+                        3.2173819671881247,
+                        0.5466104,
+                        0.5076744,
+                        1.3921658,
+                    ),
+                    (
+                        &[4, 0, 1, 7],
+                        10.283696578728689,
+                        9.856406913983358,
+                        0.56971955,
+                        0.55309725,
+                        1.3921658,
+                    ),
+                ],
+            ),
+            (
+                17,
+                5,
+                0xbeef,
+                [
+                    (
+                        &[14, 9, 8, 1],
+                        4.230468533326506,
+                        3.7777264931691876,
+                        0.60365605,
+                        0.56938446,
+                        1.3290488,
+                    ),
+                    (
+                        &[15, 10, 0, 7],
+                        12.622279102241395,
+                        12.198347518479226,
+                        0.5652421,
+                        0.43798804,
+                        1.3290488,
+                    ),
+                    (
+                        &[14, 9, 8, 1],
+                        4.230468533326506,
+                        3.7777264931691876,
+                        0.60365605,
+                        0.6021062,
+                        1.3290488,
+                    ),
+                    (
+                        &[15, 10, 0, 7],
+                        12.622279102241395,
+                        12.198347518479226,
+                        0.5652421,
+                        0.55852985,
+                        1.3290488,
+                    ),
+                ],
+            ),
+        ];
+
+        for (n, dim, seed, pins) in cases {
+            let mut rng = SplitMix64(seed);
+            let coords: Vec<f32> = (0..n * dim).map(|_| rng.next_f32()).collect();
+            let pts = Points::new(coords, dim, Metric::Euclidean).expect("pin fixture");
+            let weights = rng.uniform_weights(n);
+
+            for (slot, exhaustive_thresholds) in [false, true].into_iter().enumerate() {
+                let cfg = GistConfig {
+                    k: 4,
+                    lambda: 0.75,
+                    eps: 0.3,
+                    exhaustive_thresholds,
+                    diameter: DiameterMode::Exact,
+                };
+
+                let mut linear = Linear::new(weights.clone());
+                assert_pin(
+                    &format!("Linear n={n} exhaustive={exhaustive_thresholds}"),
+                    &gist(&pts, &mut linear, &cfg).expect("valid configuration"),
+                    pins[2 * slot],
+                );
+
+                let mut facility = FacilityLocation::new(&pts);
+                assert_pin(
+                    &format!("FacilityLocation n={n} exhaustive={exhaustive_thresholds}"),
+                    &gist(&pts, &mut facility, &cfg).expect("valid configuration"),
+                    pins[2 * slot + 1],
+                );
+            }
+        }
+    }
+
     /// Twenty random instances, each run twice: once on a one-thread pool and
-    /// once on the default pool. The two [`GistResult`]s must be identical, which
-    /// is what pins the sweep's answer to the ascending, `>=` fold rather than to
-    /// however `rayon` split the thresholds.
+    /// once on a pool with at least two threads. The two [`GistResult`]s must be
+    /// identical, which is what pins the sweep's answer to the ascending, `>=`
+    /// fold rather than to however `rayon` split the thresholds.
+    ///
+    /// The parallel leg runs on an **explicit** two-thread pool rather than on
+    /// the ambient default one. On a single-core runner -- or under
+    /// `RAYON_NUM_THREADS=1` -- the default pool has one worker, both legs would
+    /// take the same split, and the test would pass while comparing a sequential
+    /// run against itself. Building the pool here makes the comparison real
+    /// wherever this runs, and the assertion below says so out loud.
     #[test]
     fn the_sweep_is_independent_of_the_rayon_split() {
         let single = rayon::ThreadPoolBuilder::new()
             .num_threads(1)
             .build()
             .expect("a one-thread pool");
+        let many = rayon::ThreadPoolBuilder::new()
+            .num_threads(2.max(rayon::current_num_threads()))
+            .build()
+            .expect("a multi-thread pool");
+        assert!(
+            many.current_num_threads() > 1,
+            "the parallel leg needs more than one worker or this test compares a              sequential run against itself"
+        );
 
         for instance in 0..20u64 {
             let mut rng = SplitMix64(0x5eed_0000_0000_0000 ^ instance);
@@ -1419,7 +1618,7 @@ mod tests {
             let mut a = linear.clone();
             let mut b = linear;
             let sequential = single.install(|| gist(&pts, &mut a, &cfg).expect("valid"));
-            let parallel = gist(&pts, &mut b, &cfg).expect("valid");
+            let parallel = many.install(|| gist(&pts, &mut b, &cfg).expect("valid"));
             assert_eq!(
                 sequential, parallel,
                 "Linear instance {instance} depends on the rayon split"
@@ -1429,7 +1628,7 @@ mod tests {
             let mut a = facility.clone();
             let mut b = facility;
             let sequential = single.install(|| gist(&pts, &mut a, &cfg).expect("valid"));
-            let parallel = gist(&pts, &mut b, &cfg).expect("valid");
+            let parallel = many.install(|| gist(&pts, &mut b, &cfg).expect("valid"));
             assert_eq!(
                 sequential, parallel,
                 "FacilityLocation instance {instance} depends on the rayon split"

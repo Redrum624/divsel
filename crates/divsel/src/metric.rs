@@ -96,7 +96,14 @@ fn arch() -> Arch {
 // The two lints below would rewrite these loops into iterator adaptors, which
 // changes the reduction order that the SIMD bodies have to match exactly.
 #[allow(clippy::assign_op_pattern, clippy::needless_range_loop)]
-pub(crate) fn dot_scalar(a: &[f32], b: &[f32]) -> f32 {
+// `pub` + `#[doc(hidden)]`, re-exported from `testutil`, so `benches/gist.rs`
+// can measure the real body instead of a copy of it; see that module's doc.
+// `#[inline]` so the cross-crate call from the bench costs what the in-crate
+// call costs -- inlining cannot reassociate the sum, because Rust emits no
+// fast-math flags and this loop's order is written out explicitly.
+#[doc(hidden)]
+#[inline]
+pub fn dot_scalar(a: &[f32], b: &[f32]) -> f32 {
     debug_assert_eq!(a.len(), b.len(), "dot operands must have equal lengths");
 
     let mut acc = [0.0f32; LANES];
@@ -136,7 +143,10 @@ pub(crate) fn dot_scalar(a: &[f32], b: &[f32]) -> f32 {
 // The two lints below would rewrite these loops into iterator adaptors, which
 // changes the reduction order that the SIMD bodies have to match exactly.
 #[allow(clippy::assign_op_pattern, clippy::needless_range_loop)]
-pub(crate) fn sq_euclid_scalar(a: &[f32], b: &[f32]) -> f32 {
+// See the note on `dot_scalar`: hidden-public and `#[inline]` for the bench.
+#[doc(hidden)]
+#[inline]
+pub fn sq_euclid_scalar(a: &[f32], b: &[f32]) -> f32 {
     debug_assert_eq!(
         a.len(),
         b.len(),
@@ -194,9 +204,17 @@ pub(crate) fn sq_euclid_scalar(a: &[f32], b: &[f32]) -> f32 {
 ///   array is the scalar body's `acc` verbatim. The tail then folds into it by
 ///   index, and the sum runs left to right over the array.
 ///
-/// Truncating to the shorter operand keeps a length mismatch -- a violation of
-/// the kernels' debug-asserted precondition -- from panicking in release, which
-/// is what the zipped scalar bodies do.
+/// Behaviour on a length mismatch is **unspecified**, and deliberately not the
+/// scalar bodies' behaviour. Both entry points, [`dot`] and [`sq_euclid`],
+/// `debug_assert` equal lengths and every caller inside this crate passes equal
+/// lengths, so the case is a precondition violation rather than an input. This
+/// body truncates to `a.len().min(b.len())` only so that a release build does
+/// not index out of bounds; the result then differs from the scalar body's,
+/// which zips two independent `chunks_exact(16)` and so pairs elements by their
+/// position *within each operand*. For `a.len() == 33, b.len() == 20` the scalar
+/// body pairs `a[32]` with `b[16]` in lane 0, while this body folds `a[16..20]`
+/// into lanes 0..4 and drops the rest. Neither is meaningful; the parity tests
+/// only ever compare equal-length operands.
 // Same two lints, same reason: the order these loops fix is the contract.
 #[allow(clippy::assign_op_pattern, clippy::needless_range_loop)]
 #[inline(always)]
