@@ -41,6 +41,8 @@
 
 use std::cmp::Ordering;
 
+use rayon::iter::{IntoParallelRefIterator, ParallelIterator};
+
 use crate::error::DivselError;
 use crate::greedy::greedy_independent_set;
 use crate::points::Points;
@@ -383,7 +385,13 @@ fn better_pair(a: (f32, usize, usize), b: (f32, usize, usize)) -> (f32, usize, u
 ///
 /// # Cost
 ///
-/// `1 + |D|` calls to [`greedy_independent_set`], plus one diameter scan.
+/// `1 + |D|` calls to [`greedy_independent_set`], plus one diameter scan. The
+/// `|D|` sweep calls are independent, so they run on the `rayon` thread pool,
+/// each worker holding its own [`Utility::boxed_clone`] of `util`; only the fold
+/// that picks the winner is sequential, because its tie rule is order dependent.
+/// The sweep therefore materialises one candidate selection per threshold --
+/// `O(|D| * k)` indices -- before folding, which is nothing for the geometric
+/// set and worth knowing about for the exhaustive one.
 /// With the geometric set that is `O(n * k * log_{1+eps}(1/eps))` marginal
 /// evaluations, the bound of Theorem 3.1. With
 /// [`GistConfig::exhaustive_thresholds`] the set has up to `n*(n-1)/2 + 1`
@@ -510,12 +518,38 @@ pub fn gist(
             thresholds_with_bound(d_max, cfg.eps, bound)
         };
 
-        // Ascending, and compared **non-strictly**, so the largest threshold
-        // attaining the best f is the one that survives. A parallel sweep has to
-        // fold in this same order to return the same answer.
-        for d in set {
-            let candidate = greedy_independent_set(pts, util, d, k);
-            let (f_candidate, g_candidate, div_candidate) = evaluate(&candidate, util);
+        // The thresholds are independent of one another -- the paper's own
+        // observation, Sec. 5: "By using parallelism for different d values, we
+        // can keep the GIST-submod subset selection runtime the same as the
+        // submod algorithm" -- so the greedy runs go on the `rayon` pool.
+        //
+        // `util` is reset first and then shared immutably as the prototype every
+        // worker clones from, so no worker ever sees another's selection state.
+        // `map_init` clones once per worker rather than once per threshold;
+        // `greedy_independent_set` resets what it is handed, so reusing a clone
+        // across the thresholds a worker happens to receive is safe, and the
+        // determinism test pins that.
+        util.reset();
+        let prototype: &dyn Utility = &*util;
+        let scanned: Vec<(f32, Vec<usize>, f64, f64, f32)> = set
+            .par_iter()
+            .map_init(
+                || prototype.boxed_clone(),
+                |worker, &d| {
+                    let candidate = greedy_independent_set(pts, worker.as_mut(), d, k);
+                    let (f_candidate, g_candidate, div_candidate) =
+                        evaluate(&candidate, worker.as_mut());
+                    (d, candidate, f_candidate, g_candidate, div_candidate)
+                },
+            )
+            .collect();
+
+        // `collect` restores the order of `set`, so this fold runs ascending and
+        // compares **non-strictly**, exactly as a sequential sweep would: the
+        // largest threshold attaining the best f is the one that survives. The
+        // fold stays sequential precisely because that tie rule is order
+        // dependent -- a parallel reduction would have to re-derive it.
+        for (d, candidate, f_candidate, g_candidate, div_candidate) in scanned {
             if f_candidate >= f_value {
                 selected = candidate;
                 f_value = f_candidate;
@@ -542,6 +576,8 @@ pub fn gist(
 #[cfg(test)]
 mod tests {
     use std::cmp::Ordering;
+    use std::sync::atomic::{self, AtomicBool};
+    use std::sync::Arc;
 
     use super::{
         approx_diameter, div, div_with_dmax, eval_g, exhaustive_threshold_set, gist, thresholds,
@@ -552,7 +588,7 @@ mod tests {
     use crate::metric::Metric;
     use crate::points::Points;
     use crate::testutil::SplitMix64;
-    use crate::utility::{Linear, Utility};
+    use crate::utility::{FacilityLocation, Linear, Utility};
 
     /// Five points on a line at `x = 0, 1, 3, 7, 12`; the diameter is exactly 12.
     fn line_five() -> Points<'static> {
@@ -1275,5 +1311,129 @@ mod tests {
         let on_g = greedy_independent_set(&pts, &mut util, 0.0, cfg.k);
         let f_on_g = f_of(&pts, &mut util, &on_g, cfg.lambda, d_hat);
         assert!(out.f_value >= f_on_g);
+    }
+
+    // ---- (g) the parallel threshold sweep ---------------------------------
+
+    /// A [`Linear`] utility that records whether any of its marginals was
+    /// evaluated on a `rayon` worker thread.
+    ///
+    /// [`Utility::boxed_clone`] shares the flag, so every clone the sweep hands
+    /// to a worker reports into the same place.
+    #[derive(Clone)]
+    struct PoolWitness {
+        weights: Vec<f64>,
+        on_pool: Arc<AtomicBool>,
+    }
+
+    impl Utility for PoolWitness {
+        fn marginal(&self, v: usize, _selected: &[usize], _pts: &Points<'_>) -> f64 {
+            if rayon::current_thread_index().is_some() {
+                self.on_pool.store(true, atomic::Ordering::Relaxed);
+            }
+            self.weights[v]
+        }
+
+        fn commit(&mut self, _v: usize, _pts: &Points<'_>) {}
+
+        fn reset(&mut self) {}
+
+        fn is_linear(&self) -> bool {
+            true
+        }
+
+        fn validate(&self, pts: &Points<'_>) -> Result<(), DivselError> {
+            if self.weights.len() != pts.n() {
+                return Err(DivselError::WeightsLength {
+                    expected: pts.n(),
+                    got: self.weights.len(),
+                });
+            }
+            Ok(())
+        }
+
+        fn boxed_clone(&self) -> Box<dyn Utility> {
+            Box::new(self.clone())
+        }
+    }
+
+    /// The sweep must actually run on the thread pool, not merely produce the
+    /// same answer as a sequential one.
+    ///
+    /// `gist` is called from the test's own thread, which is not a `rayon`
+    /// worker, so `rayon::current_thread_index()` is `None` everywhere a
+    /// sequential sweep could evaluate a marginal. Observing `Some(_)` therefore
+    /// proves a marginal ran inside the pool. This is the assertion a sequential
+    /// implementation fails; the determinism test below cannot fail for it,
+    /// since a sequential sweep satisfies determinism trivially.
+    #[test]
+    fn the_threshold_sweep_runs_on_the_rayon_pool() {
+        assert!(
+            rayon::current_thread_index().is_none(),
+            "this test has to run outside a rayon worker for the probe to mean anything"
+        );
+
+        let mut rng = SplitMix64(0x9e37_79b9_5eed_0001);
+        let pts = Points::new(rng.gaussian_points(200, 8), 8, Metric::Euclidean)
+            .expect("gaussian point set");
+        let flag = Arc::new(AtomicBool::new(false));
+        let mut util = PoolWitness {
+            weights: rng.uniform_weights(pts.n()),
+            on_pool: Arc::clone(&flag),
+        };
+
+        let out = gist(&pts, &mut util, &GistConfig::default()).expect("valid configuration");
+        assert!(!out.selected.is_empty());
+        assert!(
+            flag.load(atomic::Ordering::Relaxed),
+            "no marginal was evaluated on a rayon worker: the threshold sweep is still sequential"
+        );
+    }
+
+    /// Twenty random instances, each run twice: once on a one-thread pool and
+    /// once on the default pool. The two [`GistResult`]s must be identical, which
+    /// is what pins the sweep's answer to the ascending, `>=` fold rather than to
+    /// however `rayon` split the thresholds.
+    #[test]
+    fn the_sweep_is_independent_of_the_rayon_split() {
+        let single = rayon::ThreadPoolBuilder::new()
+            .num_threads(1)
+            .build()
+            .expect("a one-thread pool");
+
+        for instance in 0..20u64 {
+            let mut rng = SplitMix64(0x5eed_0000_0000_0000 ^ instance);
+            let dim = 1 + (instance % 5) as usize;
+            let n = 20 + (instance % 11) as usize;
+            let pts = Points::new(rng.gaussian_points(n, dim), dim, Metric::Euclidean)
+                .expect("gaussian point set");
+            let cfg = GistConfig {
+                k: 2 + (instance % 4) as usize,
+                lambda: 0.25 + f64::from(instance as u32) / 10.0,
+                eps: 0.3,
+                exhaustive_thresholds: instance % 2 == 0,
+                diameter: DiameterMode::Exact,
+            };
+
+            let linear = Linear::new(rng.uniform_weights(n));
+            let mut a = linear.clone();
+            let mut b = linear;
+            let sequential = single.install(|| gist(&pts, &mut a, &cfg).expect("valid"));
+            let parallel = gist(&pts, &mut b, &cfg).expect("valid");
+            assert_eq!(
+                sequential, parallel,
+                "Linear instance {instance} depends on the rayon split"
+            );
+
+            let facility = FacilityLocation::new(&pts);
+            let mut a = facility.clone();
+            let mut b = facility;
+            let sequential = single.install(|| gist(&pts, &mut a, &cfg).expect("valid"));
+            let parallel = gist(&pts, &mut b, &cfg).expect("valid");
+            assert_eq!(
+                sequential, parallel,
+                "FacilityLocation instance {instance} depends on the rayon split"
+            );
+        }
     }
 }

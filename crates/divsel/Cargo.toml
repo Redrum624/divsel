@@ -10,6 +10,18 @@ readme = "../../README.md"
 keywords = ["submodular", "diversification", "gist", "mmr", "retrieval"]
 categories = ["algorithms", "science"]
 
+[lib]
+# criterion supplies its own harness, so the libtest one must not also claim
+# `cargo bench`'s command line -- otherwise `-- --quick` is rejected by it
+# before criterion ever sees it.
+bench = false
+
+[features]
+# Adds the n = 100_000 and n = 1_000_000 benchmark groups. They are opt-in
+# because their setup alone -- generating up to 3 GiB of Gaussian points and
+# scanning for a diameter -- takes minutes before any measurement starts.
+bench-large = []
+
 [dependencies]
 rayon = "1.12"
 pulp  = "0.22"
