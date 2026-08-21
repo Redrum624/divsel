@@ -27,7 +27,11 @@ pub enum DivselError {
         /// Zero-based column index of the offending coordinate.
         col: usize,
     },
-    /// A row had a zero L2 norm and so cannot be normalized for cosine distance.
+    /// A row had a zero or un-normalizable L2 norm, so it cannot be scaled to
+    /// unit length for cosine distance.
+    ///
+    /// Covers an all-zero row, a row whose sum of squares overflows `f32` to
+    /// infinity, and a row so small that every square underflows to zero.
     ZeroNormRow {
         /// Zero-based index of the offending row.
         row: usize,
@@ -78,7 +82,7 @@ impl fmt::Display for DivselError {
             ),
             Self::ZeroNormRow { row } => write!(
                 f,
-                "row {row} has a zero L2 norm and cannot be normalized for cosine distance"
+                "row {row} has a zero or un-normalizable L2 norm and cannot be scaled to unit length for cosine distance"
             ),
             Self::WeightsLength { expected, got } => write!(
                 f,

@@ -138,14 +138,46 @@ mod tests {
         out
     }
 
+    /// Seed pairs swept by the structure guards below.
+    ///
+    /// One pair is nowhere near enough. A fused-multiply-add rewrite of either
+    /// kernel is bit-identical to the correct reduction on most inputs -- measured
+    /// here, only 5 of these 16 pairs separate a fused `dot` and only 4 separate a
+    /// fused `sq_euclid` -- so a single sample would wave an FMA straight through.
+    /// `the_structure_guard_can_detect_a_fused_multiply_add` holds this sweep to
+    /// that job, and fails if a change to `sample` ever makes it blind.
+    const STRUCTURE_SEEDS: [(u32, u32); 16] = [
+        (0x0000_0001, 0x0000_0002),
+        (0x0000_0003, 0x0000_0004),
+        (0x1234_5678, 0x9e37_79b9),
+        (0x0bad_c0de, 0xdead_beef),
+        (0x00c0_ffee, 0x00fe_ed01),
+        (0x5eed_1234, 0x0f0f_0f0f),
+        (0xa5a5_a5a5, 0x5a5a_5a5a),
+        (0x0000_beef, 0xcafe_0000),
+        (0x2718_2818, 0x3141_5926),
+        (0x1618_0339, 0x6180_3398),
+        (0x0102_0304, 0x0a0b_0c0d),
+        (0xfeed_face, 0xabcd_ef01),
+        (0x7fff_ffff, 0x8000_0001),
+        (0x1357_9bdf, 0x2468_ace0),
+        (0xdead_c0de, 0xb16b_00b5),
+        (0x0000_0005, 0x0000_0006),
+    ];
+
     /// Hand-written 16-accumulator reference, written with explicit indices rather
     /// than `chunks_exact`, so it guards the kernel's reduction *structure*.
+    ///
+    /// The lane count is spelled as a literal `16` on purpose, not as
+    /// [`super::LANES`]: the reference has to be an independent statement of the
+    /// contract, so that redefining the constant is caught here instead of being
+    /// silently mirrored.
     // Allowed for the same reason as the kernels: the rewrites these lints
     // suggest would not preserve the order this reference exists to pin.
     #[allow(clippy::assign_op_pattern, clippy::needless_range_loop)]
     fn reference(a: &[f32], b: &[f32], square_difference: bool) -> f32 {
-        let mut acc = [0.0f32; LANES];
-        let full = a.len() / LANES;
+        let mut acc = [0.0f32; 16];
+        let full = a.len() / 16;
         let term = |idx: usize| {
             if square_difference {
                 let d = a[idx] - b[idx];
@@ -155,17 +187,17 @@ mod tests {
             }
         };
         for chunk in 0..full {
-            for l in 0..LANES {
-                let idx = chunk * LANES + l;
+            for l in 0..16 {
+                let idx = chunk * 16 + l;
                 acc[l] = acc[l] + term(idx);
             }
         }
-        for idx in (full * LANES)..a.len() {
-            let l = idx - full * LANES;
+        for idx in (full * 16)..a.len() {
+            let l = idx - full * 16;
             acc[l] = acc[l] + term(idx);
         }
         let mut total = 0.0f32;
-        for l in 0..LANES {
+        for l in 0..16 {
             total = total + acc[l];
         }
         total
@@ -177,6 +209,39 @@ mod tests {
 
     fn reference_sq_euclid(a: &[f32], b: &[f32]) -> f32 {
         reference(a, b, true)
+    }
+
+    /// The same 16-lane shape as [`reference`], but fusing each multiply into its
+    /// add. This is the tempting "optimisation" the R-G22 contract forbids, since
+    /// it skips the intermediate rounding; it exists here only so the structure
+    /// guards can be shown to detect it.
+    #[allow(clippy::assign_op_pattern, clippy::needless_range_loop)]
+    fn fused_reference(a: &[f32], b: &[f32], square_difference: bool) -> f32 {
+        let mut acc = [0.0f32; 16];
+        let full = a.len() / 16;
+        let fuse = |idx: usize, carry: f32| {
+            if square_difference {
+                let d = a[idx] - b[idx];
+                d.mul_add(d, carry)
+            } else {
+                a[idx].mul_add(b[idx], carry)
+            }
+        };
+        for chunk in 0..full {
+            for l in 0..16 {
+                let idx = chunk * 16 + l;
+                acc[l] = fuse(idx, acc[l]);
+            }
+        }
+        for idx in (full * 16)..a.len() {
+            let l = idx - full * 16;
+            acc[l] = fuse(idx, acc[l]);
+        }
+        let mut total = 0.0f32;
+        for l in 0..16 {
+            total = total + acc[l];
+        }
+        total
     }
 
     #[test]
@@ -215,18 +280,55 @@ mod tests {
     #[test]
     fn dot_reduces_in_the_fixed_sixteen_accumulator_order() {
         // 1001 = 62 * 16 + 9, so the tail path is exercised too.
-        let a = sample(1001, 0x0000_0001);
-        let b = sample(1001, 0x0000_0002);
-        assert_eq!(dot(&a, &b).to_bits(), reference_dot(&a, &b).to_bits());
+        for (seed_a, seed_b) in STRUCTURE_SEEDS {
+            let a = sample(1001, seed_a);
+            let b = sample(1001, seed_b);
+            assert_eq!(
+                dot(&a, &b).to_bits(),
+                reference_dot(&a, &b).to_bits(),
+                "dot left the fixed reduction order for seeds ({seed_a:#010x}, {seed_b:#010x})"
+            );
+        }
     }
 
     #[test]
     fn sq_euclid_reduces_in_the_fixed_sixteen_accumulator_order() {
-        let a = sample(1001, 0x0000_0003);
-        let b = sample(1001, 0x0000_0004);
-        assert_eq!(
-            sq_euclid(&a, &b).to_bits(),
-            reference_sq_euclid(&a, &b).to_bits()
+        for (seed_a, seed_b) in STRUCTURE_SEEDS {
+            let a = sample(1001, seed_a);
+            let b = sample(1001, seed_b);
+            assert_eq!(
+                sq_euclid(&a, &b).to_bits(),
+                reference_sq_euclid(&a, &b).to_bits(),
+                "sq_euclid left the fixed reduction order for seeds ({seed_a:#010x}, {seed_b:#010x})"
+            );
+        }
+    }
+
+    /// Guards the guard. The two tests above are the automated backstop for the
+    /// "no `mul_add`/FMA" half of the kernel contract, and they are only worth
+    /// anything if their seed sweep can actually tell a fused kernel apart from a
+    /// correct one. On any single input it often cannot.
+    #[test]
+    fn the_structure_guard_can_detect_a_fused_multiply_add() {
+        let mut differing_dot = 0usize;
+        let mut differing_sq_euclid = 0usize;
+        for (seed_a, seed_b) in STRUCTURE_SEEDS {
+            let a = sample(1001, seed_a);
+            let b = sample(1001, seed_b);
+            if fused_reference(&a, &b, false).to_bits() != reference_dot(&a, &b).to_bits() {
+                differing_dot += 1;
+            }
+            if fused_reference(&a, &b, true).to_bits() != reference_sq_euclid(&a, &b).to_bits() {
+                differing_sq_euclid += 1;
+            }
+        }
+        assert!(
+            differing_dot > 0,
+            "no seed pair separates a fused dot from the reference, so              dot_reduces_in_the_fixed_sixteen_accumulator_order could not see an FMA rewrite"
+        );
+        assert!(
+            differing_sq_euclid > 0,
+            "no seed pair separates a fused sq_euclid from the reference, so              sq_euclid_reduces_in_the_fixed_sixteen_accumulator_order could not see an FMA rewrite"
         );
     }
 

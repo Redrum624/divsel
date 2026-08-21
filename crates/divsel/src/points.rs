@@ -63,10 +63,16 @@ fn validate(data: &[f32], dim: usize) -> Result<usize, DivselError> {
 
 /// L2-normalizes each row in place, dividing by the norm rather than multiplying
 /// by its reciprocal so that each coordinate stays correctly rounded.
+///
+/// The norm is derived from a sum of squares accumulated in `f32`, so it is
+/// rejected as un-normalizable when that sum overflows to infinity (a row of very
+/// large coordinates) as well as when it is zero -- either because the row really
+/// is all zeros or because every square underflowed. Dividing by an infinite norm
+/// would otherwise fail open, silently yielding an all-zero, non-unit row.
 fn normalize_rows(data: &mut [f32], dim: usize) -> Result<(), DivselError> {
     for (row, values) in data.chunks_exact_mut(dim).enumerate() {
         let norm = dot(values, values).sqrt();
-        if norm == 0.0 {
+        if norm == 0.0 || !norm.is_finite() {
             return Err(DivselError::ZeroNormRow { row });
         }
         for value in values.iter_mut() {
@@ -97,13 +103,31 @@ impl<'a> Points<'a> {
     ///
     /// Under [`Metric::Cosine`] every row is L2-normalized in place.
     ///
+    /// # Normalizable range
+    ///
+    /// Row norms are derived from a sum of squares accumulated in `f32`, so a row
+    /// is normalized exactly when its L2 norm lands in roughly
+    /// `[1.0842022e-19, 1.8446743e19]` -- that is, `sqrt(f32::MIN_POSITIVE)` up to
+    /// `sqrt(f32::MAX)`. Above the top of that band the sum of squares overflows,
+    /// and far below the bottom every square underflows to zero; both are rejected
+    /// with [`DivselError::ZeroNormRow`] rather than silently producing a non-unit
+    /// row. Note that the second case rejects a row that is not literally zero.
+    ///
+    /// One narrow gap is *not* rejected: when the sum of squares is subnormal but
+    /// still nonzero (norms just under `1.0842022e-19`), it keeps too few
+    /// significant bits and the row normalizes to a length near, but not equal to,
+    /// `1.0`. For example `[3e-23, 4e-23]` becomes `[0.566684, 0.75557864]`, of
+    /// length `0.9444733` rather than `[0.6, 0.8]`. Rescale such embeddings before
+    /// handing them over.
+    ///
     /// # Errors
     ///
     /// Returns [`DivselError::ZeroDim`] if `dim == 0`, [`DivselError::EmptyInput`]
     /// if `data` is empty, [`DivselError::LengthNotMultipleOfDim`] if `data.len()`
     /// is not a multiple of `dim`, [`DivselError::NonFinite`] for the first `NaN`
     /// or infinite coordinate in row-major order, and, under [`Metric::Cosine`],
-    /// [`DivselError::ZeroNormRow`] for the first all-zero row.
+    /// [`DivselError::ZeroNormRow`] for the first row that cannot be scaled to unit
+    /// length, as described above.
     pub fn new(data: Vec<f32>, dim: usize, metric: Metric) -> Result<Points<'static>, DivselError> {
         let n = validate(&data, dim)?;
         let mut data = data;
@@ -122,7 +146,8 @@ impl<'a> Points<'a> {
     ///
     /// Under [`Metric::Euclidean`] the slice is used in place with no copy. Under
     /// [`Metric::Cosine`] an L2-normalized copy is made, since normalization
-    /// requires mutation.
+    /// requires mutation. The same normalizable range documented on
+    /// [`Points::new`] applies.
     ///
     /// # Errors
     ///
@@ -310,6 +335,36 @@ mod tests {
         );
         let pts = Points::new(data, 2, Metric::Euclidean).expect("euclidean allows zero rows");
         assert_eq!(pts.n(), 3);
+    }
+
+    #[test]
+    fn a_row_whose_sum_of_squares_overflows_is_rejected_under_cosine() {
+        // Every coordinate is finite, so validation passes, but row 1's sum of
+        // squares overflows f32 to infinity. Dividing by an infinite norm used to
+        // fail open and silently yield an all-zero, non-unit row.
+        let data = vec![1.0, 0.0, 1e20, 2e20];
+        assert_eq!(
+            Points::new(data.clone(), 2, Metric::Cosine).unwrap_err(),
+            DivselError::ZeroNormRow { row: 1 }
+        );
+        assert_eq!(
+            Points::borrowed(&data, 2, Metric::Cosine).unwrap_err(),
+            DivselError::ZeroNormRow { row: 1 }
+        );
+        // Euclidean never normalizes, so it accepts the very same buffer.
+        assert!(Points::new(data, 2, Metric::Euclidean).is_ok());
+    }
+
+    #[test]
+    fn a_row_whose_sum_of_squares_underflows_is_rejected_under_cosine() {
+        // Pins the documented behaviour at the other end of the band: this row is
+        // not literally zero, but every square underflows to zero in f32, so it
+        // cannot be scaled to unit length and is reported as a zero-norm row.
+        let data = vec![1.0, 0.0, 1e-25, 1e-25];
+        assert_eq!(
+            Points::new(data, 2, Metric::Cosine).unwrap_err(),
+            DivselError::ZeroNormRow { row: 1 }
+        );
     }
 
     // ---- storage ----------------------------------------------------------
