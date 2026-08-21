@@ -5,3 +5,11 @@
 
 #![deny(missing_docs)]
 #![warn(clippy::all)]
+
+pub mod error;
+pub mod metric;
+pub mod points;
+
+pub use error::DivselError;
+pub use metric::Metric;
+pub use points::Points;
