@@ -362,6 +362,7 @@ mod tests {
     use crate::error::DivselError;
     use crate::metric::Metric;
     use crate::points::Points;
+    use crate::testutil::SplitMix64;
 
     const TOL: f64 = 1e-6;
 
@@ -373,38 +374,14 @@ mod tests {
         );
     }
 
-    /// SplitMix64: a deterministic, dependency-free generator for the randomized
-    /// spot-checks. Task 3 promotes this to a shared test-support module.
-    struct SplitMix64(u64);
-
-    impl SplitMix64 {
-        fn new(seed: u64) -> Self {
-            Self(seed)
-        }
-
-        fn next_u64(&mut self) -> u64 {
-            self.0 = self.0.wrapping_add(0x9e37_79b9_7f4a_7c15);
-            let mut z = self.0;
-            z = (z ^ (z >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
-            z = (z ^ (z >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
-            z ^ (z >> 31)
-        }
-
-        /// A float in `[-1, 1)`.
-        fn next_coord(&mut self) -> f32 {
-            let unit = (self.next_u64() >> 40) as f32 / 16_777_216.0;
-            unit * 2.0 - 1.0
-        }
-
-        /// An index in `0..bound`.
-        fn below(&mut self, bound: usize) -> usize {
-            (self.next_u64() % bound as u64) as usize
-        }
-    }
-
+    /// Coordinates uniform in `[-1, 1)`, from the shared test generator.
+    ///
+    /// `next_f32` is exactly the `[0, 1)` draw this module used before the
+    /// generator moved to [`crate::testutil`], so every seeded sequence here is
+    /// unchanged.
     fn sample(n: usize, dim: usize, seed: u64) -> Vec<f32> {
-        let mut rng = SplitMix64::new(seed);
-        (0..n * dim).map(|_| rng.next_coord()).collect()
+        let mut rng = SplitMix64(seed);
+        (0..n * dim).map(|_| rng.next_f32() * 2.0 - 1.0).collect()
     }
 
     /// Four points, used wherever a `Points` is needed only to satisfy a
@@ -705,7 +682,7 @@ mod tests {
         const N: usize = 30;
         for metric in [Metric::Cosine, Metric::Euclidean] {
             let pts = Points::new(sample(N, 6, 0x5eed_0004), 6, metric).expect("sample points");
-            let mut rng = SplitMix64::new(0xabcd_ef01_2345_6789);
+            let mut rng = SplitMix64(0xabcd_ef01_2345_6789);
             let mut subset = FacilityLocation::new(&pts);
             let mut superset = FacilityLocation::new(&pts);
             let mut pool: Vec<usize> = (0..N).collect();

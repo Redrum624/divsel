@@ -7,11 +7,19 @@
 #![warn(clippy::all)]
 
 pub mod error;
+pub mod greedy;
 pub mod metric;
 pub mod points;
 pub mod utility;
 
+// Deterministic test-data helpers, shared by this crate's unit tests, its
+// integration tests and its benches. Public so those targets can reach it, but
+// not part of the supported API.
+#[doc(hidden)]
+pub mod testutil;
+
 pub use error::DivselError;
+pub use greedy::greedy_independent_set;
 pub use metric::Metric;
 pub use points::Points;
 pub use utility::{Coverage, FacilityLocation, Linear, Utility};
