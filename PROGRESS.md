@@ -2,8 +2,8 @@
 
 Plan: `docs/superpowers/plans/2026-08-21-divsel-v0.1.md` · Execution: Subagent-Driven Development on branch `feat/v0.1`.
 
-CURRENT LOT: 5
-NEXT ACTION: Task 5 implementer running from `.superpowers/sdd/2026-08-21-divsel-v0.1/task-5-brief.md` + `task-5-context.md` (tests/exact_oracle.rs: enumerate subsets of size 0..=k on 500 instances, assert (1/2−ε), (2/3−ε), exact 2/3 exhaustive, 0.387 regression, sanity). On resume: if commits exist past ff3b1da, run the task review; else re-dispatch. If the oracle FAILS, the library is wrong — route to a library fix, never weaken the bound.
+CURRENT LOT: 6
+NEXT ACTION: Task 6 implementer running from `.superpowers/sdd/2026-08-21-divsel-v0.1/task-6-brief.md` + `task-6-context.md` (pulp-dispatched kernels bit-identical to the 16-accumulator scalar path, rayon sweep with ascending fold, criterion benches, bench-large feature). Task 7 follows sequentially (no parallel implementers). On resume: if commits exist past ccaa83d, run the task review; else re-dispatch.
 
 | Lot | Goal (one line) | Status | Commit SHA | Files touched | Next concrete action |
 |-----|-----------------|--------|-----------|---------------|----------------------|
@@ -12,8 +12,8 @@ NEXT ACTION: Task 5 implementer running from `.superpowers/sdd/2026-08-21-divsel
 | 2 | Utility functions (Linear, Coverage, FacilityLocation) | done | 8233c90 | crates/divsel/src/{utility,error,lib}.rs | — |
 | 3 | `GreedyIndependentSet` + CELF lazy greedy | done | 06366e5 | crates/divsel/src/{greedy,testutil,lib,utility}.rs | — |
 | 4 | GIST driver + public API | done | ff3b1da | crates/divsel/src/{gist,lib}.rs | — |
-| 5 | Brute-force oracle + approximation-ratio property test | in-progress | — | crates/divsel/tests/exact_oracle.rs | see NEXT ACTION |
-| 6 | SIMD distance kernels + parallel thresholds + criterion benches | todo | — | — | after lot 5 |
+| 5 | Brute-force oracle + approximation-ratio property test | done | ccaa83d | crates/divsel/tests/exact_oracle.rs | — |
+| 6 | SIMD distance kernels + parallel thresholds + criterion benches | in-progress | — | crates/divsel/src/{metric,gist}.rs, benches/gist.rs | see NEXT ACTION |
 | 7 | PyO3 bindings + Python package | todo | — | — | after lot 5 |
 | 8 | Benchmarks vs incumbents + installability matrix | todo | — | — | after lots 6, 7 |
 | 9 | LangChain / LlamaIndex adapters | todo | — | — | after lot 8 |
