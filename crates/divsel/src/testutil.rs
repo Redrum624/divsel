@@ -5,10 +5,30 @@
 //! tests and benches, which compile against the crate as an external library, but
 //! it is not part of the supported API and carries no stability promise.
 //!
-//! Everything here is pure integer and IEEE-754 arithmetic over a fixed
-//! algorithm, so a given seed yields the same bytes on every platform and every
-//! run -- which is what makes the randomized tests reproducible failure reports
-//! rather than flakes.
+//! # Platform determinism
+//!
+//! [`SplitMix64::next_u64`], [`SplitMix64::next_f64`], [`SplitMix64::next_f32`],
+//! [`SplitMix64::below`] and [`SplitMix64::uniform_weights`] are integer
+//! arithmetic plus exact power-of-two divisions. A given seed yields the same
+//! bits from them on every platform, every Rust version and every run, so a
+//! fixture may pin their exact values.
+//!
+//! [`SplitMix64::normal`] and [`SplitMix64::gaussian_points`] are **not** in
+//! that set. Box-Muller needs `f64::ln` and `f64::cos`, and the standard
+//! library promises nothing about either: both are documented under
+//! "Unspecified precision -- the precision of this function is
+//! non-deterministic. This means it varies by platform, Rust version, and can
+//! even differ within the same execution from one invocation to the next." Of
+//! the operations used here only `sqrt` is correctly rounded ("guaranteed to be
+//! the rounded infinite-precision result ... specified by IEEE 754 as
+//! squareRoot"). A Gaussian coordinate can therefore differ in its last ulp
+//! between two machines, and a selection derived from one can differ by a whole
+//! index once two marginals land close enough together.
+//!
+//! So: **never back an exact-value fixture with Gaussian draws.** Use them for
+//! statistical or structural assertions that carry headroom -- an independence
+//! property, an agreement between two code paths, a count with slack -- and
+//! reach for the integer draws when a test needs to pin bytes.
 
 /// [SplitMix64], the reference finalizer used to seed `xoshiro`, as a small
 /// standalone generator.
@@ -75,6 +95,13 @@ impl SplitMix64 {
     /// the stream depend on how many deviates a caller has drawn so far, which is
     /// exactly the kind of hidden state that makes seeded tests hard to reason
     /// about.
+    ///
+    /// # Platform determinism
+    ///
+    /// Unlike the integer draws, this is **not** bit-stable across platforms:
+    /// `f64::ln` and `f64::cos` carry no precision guarantee in the standard
+    /// library, so the last ulp is the platform's business, not this crate's. Do
+    /// not pin exact values derived from it; see the module documentation.
     pub fn normal(&mut self) -> f32 {
         // `next_f64` yields [0, 1); the reflection moves it to (0, 1] so the
         // logarithm is always finite.
@@ -89,6 +116,15 @@ impl SplitMix64 {
     ///
     /// Gaussian coordinates give a point cloud with no preferred direction and no
     /// zero rows, so it is usable under both [`Metric`](crate::Metric) variants.
+    ///
+    /// # Platform determinism
+    ///
+    /// Inherits the caveat on [`SplitMix64::normal`]: the coordinates are
+    /// reproducible for a given seed on a given machine, but not bit-stable
+    /// across platforms or Rust versions. Assertions over these points must
+    /// carry headroom -- a golden fixture that pins a selection computed from
+    /// them would be fragile, and its failures would be misread as bugs in the
+    /// code under test.
     pub fn gaussian_points(&mut self, n: usize, dim: usize) -> Vec<f32> {
         (0..n * dim).map(|_| self.normal()).collect()
     }
