@@ -3,7 +3,7 @@
 Plan: `docs/superpowers/plans/2026-08-21-divsel-v0.1.md` · Execution: Subagent-Driven Development on branch `feat/v0.1`.
 
 CURRENT LOT: 6
-NEXT ACTION: Task 6 implementer running from `.superpowers/sdd/2026-08-21-divsel-v0.1/task-6-brief.md` + `task-6-context.md` (pulp-dispatched kernels bit-identical to the 16-accumulator scalar path, rayon sweep with ascending fold, criterion benches, bench-large feature). Task 7 follows sequentially (no parallel implementers). On resume: if commits exist past ccaa83d, run the task review; else re-dispatch.
+NEXT ACTION: Task 6 fix round 1 is COMMITTED (7ece44e) and pushed. Lot 6 is NOT yet done: the scoped re-review of `aa89e4b..7ece44e` against the three Important findings has not run. Resume with that re-review (template: `.superpowers/sdd/.../re-review-prompt.md` equivalent; findings are in the SDD ledger), then Task 7 (PyO3) from `task-7-brief.md` + `task-7-context.md`.
 
 | Lot | Goal (one line) | Status | Commit SHA | Files touched | Next concrete action |
 |-----|-----------------|--------|-----------|---------------|----------------------|
