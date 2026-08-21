@@ -1,0 +1,28 @@
+[build-system]
+requires = ["maturin>=1.14,<2.0"]
+build-backend = "maturin"
+
+[project]
+name = "divsel"
+dynamic = ["version"]
+requires-python = ">=3.11"
+license = "Apache-2.0"
+readme = "README.md"
+description = "GIST max-min diversification with submodular utility (NeurIPS 2025) — native Rust core, zero-copy numpy bindings"
+classifiers = ["Programming Language :: Rust"]
+dependencies = ["numpy>=1.26"]
+
+[project.optional-dependencies]
+langchain  = ["langchain-core>=1.0"]
+llamaindex = ["llama-index-core>=0.12"]
+
+[tool.maturin]
+manifest-path = "crates/divsel-py/Cargo.toml"
+module-name = "divsel._divsel"
+python-source = "python"
+
+[tool.maturin.generate-ci.github]
+trusted-publishing = true
+
+[tool.pytest.ini_options]
+testpaths = ["python/tests"]

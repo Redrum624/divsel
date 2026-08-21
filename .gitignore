@@ -1,0 +1,12 @@
+/target
+/.venv
+__pycache__/
+*.pyc
+*.so
+*.pyd
+/dist
+/wheels
+.pytest_cache/
+/python/divsel/_divsel*.pyd
+/python/divsel/_divsel*.so
+*.egg-info/

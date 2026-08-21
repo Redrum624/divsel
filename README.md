@@ -2,7 +2,7 @@
 
 **Diverse subset selection that actually has a guarantee.** A native (Rust) implementation of **GIST** — max-min diversification with submodular utility — with zero-copy Python bindings.
 
-> Status: **planning / pre-0.1**. Implementation plan:
+> Status: **0.0.1 scaffold — core implementation in progress**. Implementation plan:
 > [`docs/superpowers/plans/2026-08-21-divsel-v0.1.md`](docs/superpowers/plans/2026-08-21-divsel-v0.1.md)
 
 ## The problem
