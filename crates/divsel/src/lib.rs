@@ -9,7 +9,9 @@
 pub mod error;
 pub mod metric;
 pub mod points;
+pub mod utility;
 
 pub use error::DivselError;
 pub use metric::Metric;
 pub use points::Points;
+pub use utility::{Coverage, FacilityLocation, Linear, Utility};

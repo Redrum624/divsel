@@ -43,6 +43,16 @@ pub enum DivselError {
         /// Length actually supplied.
         got: usize,
     },
+    /// A supplied weight was negative, `NaN`, or infinite.
+    ///
+    /// GIST's utility `g` must be monotone, which for a linear `g` means every
+    /// weight is finite and non-negative.
+    InvalidWeight {
+        /// Zero-based index of the offending weight.
+        index: usize,
+        /// The offending weight.
+        value: f64,
+    },
     /// A supplied coverage list did not have one entry per point.
     CoverageLength {
         /// Number of points, i.e. the required length.
@@ -88,6 +98,10 @@ impl fmt::Display for DivselError {
                 f,
                 "expected {expected} weights, one per point, but got {got}"
             ),
+            Self::InvalidWeight { index, value } => write!(
+                f,
+                "the weight {value} at index {index} must be finite and non-negative"
+            ),
             Self::CoverageLength { expected, got } => write!(
                 f,
                 "expected {expected} coverage lists, one per point, but got {got}"
@@ -124,7 +138,7 @@ mod tests {
 
     #[test]
     fn display_names_the_offending_values() {
-        let cases: [(DivselError, &[&str]); 11] = [
+        let cases: [(DivselError, &[&str]); 12] = [
             (DivselError::EmptyInput, &["empty"]),
             (DivselError::ZeroDim, &["dimensionality"]),
             (
@@ -139,6 +153,13 @@ mod tests {
                     got: 3,
                 },
                 &["8", "3"],
+            ),
+            (
+                DivselError::InvalidWeight {
+                    index: 4,
+                    value: -1.5,
+                },
+                &["4", "-1.5"],
             ),
             (
                 DivselError::CoverageLength {
