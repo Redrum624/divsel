@@ -3,7 +3,7 @@
 Plan: `docs/superpowers/plans/2026-08-21-divsel-v0.1.md` · Execution: Subagent-Driven Development on branch `feat/v0.1`.
 
 CURRENT LOT: 9
-NEXT ACTION: Task 9 implementer running from `.superpowers/sdd/2026-08-21-divsel-v0.1/task-9-brief.md` + `task-9-context.md` (verify installed langchain-core / llama-index-core signatures BEFORE implementing; DivselRetriever + DivselNodePostprocessor with the R-G13 fallback; lazy framework imports; adapters venv). On resume: if commits exist past the lot-8 checkpoint, run the task review; else re-dispatch.
+NEXT ACTION: PAUSED on the account usage limit (resets ~5:30pm Toronto 2026-08-22). Tree clean at lot-8 checkpoint b89af43; lots 0-8 done, reviewed, pushed. Task 9 (adapters) has NOT started (a dead agent left only the git-ignored .venv-adapters). Resume: re-dispatch Task 9 implement->review from `.superpowers/sdd/2026-08-21-divsel-v0.1/task-9-brief.md` + `task-9-context.md` (BASE b89af43), then Task 10 (`task-10-context.md`: CI/wheels/0.1.0 prep, publishes stay deferred per R-PUB), then Task 11 (`task-11-context.md`: golden fixtures + CONFORMANCE.md), then the final whole-branch review and the user's release checklist in docs/RELEASE.md.
 
 | Lot | Goal (one line) | Status | Commit SHA | Files touched | Next concrete action |
 |-----|-----------------|--------|-----------|---------------|----------------------|
