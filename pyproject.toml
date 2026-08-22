@@ -23,6 +23,10 @@ manifest-path = "crates/divsel-py/Cargo.toml"
 features = ["pyo3/extension-module"]
 module-name = "divsel._divsel"
 python-source = "python"
+# maturin 1.14.1 writes `License-File: LICENSE` into the sdist's PKG-INFO but does
+# not add the file itself (the wheel does get dist-info/licenses/LICENSE); include
+# it explicitly so the sdist metadata is not dangling.
+include = [{ path = "LICENSE", format = "sdist" }]
 
 [tool.maturin.generate-ci.github]
 trusted-publishing = true
