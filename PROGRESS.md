@@ -2,8 +2,8 @@
 
 Plan: `docs/superpowers/plans/2026-08-21-divsel-v0.1.md` · Execution: Subagent-Driven Development on branch `feat/v0.1`.
 
-CURRENT LOT: 10
-NEXT ACTION: Task 10 implementer running from `.superpowers/sdd/2026-08-21-divsel-v0.1/task-10-brief.md` + `task-10-context.md` (generate release.yml via maturin generate-ci with trusted-publishing, hand-write ci.yml incl. MSRV-check and aarch64 parity jobs, bump 0.0.1→0.1.0, CHANGELOG, cargo publish --dry-run, local wheel matrix 3.11-3.14+3.14t, docs/RELEASE.md user checklist; NO publish/tag/push of tags per R-PUB). On resume: if commits exist past 6fed702, run the task review; else re-dispatch.
+CURRENT LOT: 11
+NEXT ACTION: Task 11 implementer running from `.superpowers/sdd/2026-08-21-divsel-v0.1/task-11-brief.md` + `task-11-context.md` (20 golden cases with dyadic inputs + robustness margin, gen_golden.py --check byte-stability, Rust+Python readers, CONFORMANCE.md incl. every [divsel choice] from the rulings ledger, CHANGELOG placeholder replaced, ci.yml golden steps). After lot 11: final whole-branch review, then hand the user docs/RELEASE.md.
 
 | Lot | Goal (one line) | Status | Commit SHA | Files touched | Next concrete action |
 |-----|-----------------|--------|-----------|---------------|----------------------|
@@ -17,8 +17,8 @@ NEXT ACTION: Task 10 implementer running from `.superpowers/sdd/2026-08-21-divse
 | 7 | PyO3 bindings + Python package | done | 39566f1 | crates/divsel-py/src/lib.rs, python/divsel/{__init__.py,_divsel.pyi}, python/tests/{test_api.py,fixtures.py}, crates/divsel/tests/shared_fixture.rs, pyproject.toml, .gitignore | — |
 | 8 | Benchmarks vs incumbents + installability matrix | done | 818ef9c | bench/*, docs/benchmarks/*, .github/workflows/install-matrix.yml, .github/scripts/* | — |
 | 9 | LangChain / LlamaIndex adapters | done | 6fed702 | python/divsel/adapters/*, python/tests/test_adapters.py, README.md | — |
-| 10 | CI, wheels, 0.1.0 release prep (publishes deferred per R-PUB) | in-progress | — | .github/workflows/{ci,release}.yml, CHANGELOG.md, docs/RELEASE.md, version bump | see NEXT ACTION |
-| 11 | Golden fixtures + CONFORMANCE.md | todo | — | — | after lot 10 |
+| 10 | CI, wheels, 0.1.0 release prep (publishes deferred per R-PUB) | done | 4d93311 | .github/workflows/{ci,release}.yml, CHANGELOG.md, docs/RELEASE.md, Cargo.toml, pyproject.toml, README.md | — |
+| 11 | Golden fixtures + CONFORMANCE.md | in-progress | — | test-assets/golden-selection.json, python/tools/gen_golden.py, crates/divsel/tests/golden.rs, python/tests/test_golden.py, docs/CONFORMANCE.md | see NEXT ACTION |
 
 ## Blockers known at start (2026-08-21)
 - No crates.io token (`~/.cargo/credentials.toml` absent) and no PyPI token on this machine → `cargo publish` / `maturin publish` steps cannot run unattended; everything up to the publish command is prepared and the exact command is recorded here when reached.
