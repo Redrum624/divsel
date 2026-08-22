@@ -35,6 +35,34 @@ So `divsel` aims at three things nobody currently offers together: **a real lice
 - **Reference implementation.** Exports `golden-selection.json`; the ports in [Aura](https://github.com/Redrum624/Aura) (Python) and `limbic` (TypeScript) conform to it.
 - **Apache-2.0.**
 
+## Drop-in for MMR
+
+Both adapters live behind optional extras; plain `import divsel` never imports either framework.
+
+### LangChain — `pip install "divsel[langchain]"`
+
+```python
+from divsel.adapters.langchain import DivselRetriever
+
+retriever = DivselRetriever(vectorstore=vs, k=5, fetch_k=20, lam=1.0)
+docs = retriever.invoke("your query")   # replaces vs.as_retriever(search_type="mmr")
+```
+
+Like MMR it fetches `fetch_k` candidates by query similarity, then returns the `k` of them maximizing `g(S) + λ·min-distance(S)` — with the guarantee instead of the greedy heuristic. Honest caveats: candidate texts are **re-embedded** through `vectorstore.embeddings` (stores do not expose their stored vectors uniformly), and when the store exposes no embeddings at all the retriever emits `DivselFallbackWarning` and returns plain, undiversified top-k (`strict=True` raises instead).
+
+### LlamaIndex — `pip install "divsel[llamaindex]"`
+
+```python
+from divsel.adapters.llamaindex import DivselNodePostprocessor
+
+engine = index.as_query_engine(
+    similarity_top_k=20,   # this is the fetch_k — the candidate pool
+    node_postprocessors=[DivselNodePostprocessor(k=5, lam=1.0)],
+)
+```
+
+There is no `fetch_k` parameter here: the retriever's `similarity_top_k` already fixes the candidate pool, and the postprocessor diversifies it down to `k`. Vectors come from `node.embedding` when every node carries one, else from an optional `embed_model`; with neither, it warns (`DivselFallbackWarning`) and returns top-k by score (`strict=True` raises).
+
 ## Name
 
 `divsel` = *diverse selection*. Verified free on both crates.io and PyPI, 2026-08-21.
