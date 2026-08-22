@@ -2,8 +2,8 @@
 
 Plan: `docs/superpowers/plans/2026-08-21-divsel-v0.1.md` · Execution: Subagent-Driven Development on branch `feat/v0.1`.
 
-CURRENT LOT: 8
-NEXT ACTION: Task 8 implementer running from `.superpowers/sdd/2026-08-21-divsel-v0.1/task-8-brief.md` + `task-8-context.md` (bench/compare.py vs gist-select / gist-sampling / naive MMR with one shared f evaluator; Windows installability column measured locally via uv venvs 3.11–3.14; install-matrix.yml for the 3-OS CI half; docs/benchmarks/README.md with method + machine). On resume: if commits exist past the lot-7 checkpoint, run the task review; else re-dispatch.
+CURRENT LOT: 9
+NEXT ACTION: Task 9 implementer running from `.superpowers/sdd/2026-08-21-divsel-v0.1/task-9-brief.md` + `task-9-context.md` (verify installed langchain-core / llama-index-core signatures BEFORE implementing; DivselRetriever + DivselNodePostprocessor with the R-G13 fallback; lazy framework imports; adapters venv). On resume: if commits exist past the lot-8 checkpoint, run the task review; else re-dispatch.
 
 | Lot | Goal (one line) | Status | Commit SHA | Files touched | Next concrete action |
 |-----|-----------------|--------|-----------|---------------|----------------------|
@@ -15,8 +15,8 @@ NEXT ACTION: Task 8 implementer running from `.superpowers/sdd/2026-08-21-divsel
 | 5 | Brute-force oracle + approximation-ratio property test | done | ccaa83d | crates/divsel/tests/exact_oracle.rs | — |
 | 6 | SIMD distance kernels + parallel thresholds + criterion benches | done | 7ece44e | crates/divsel/{src/metric,src/gist,src/testutil}.rs, benches/gist.rs, Cargo.toml | — |
 | 7 | PyO3 bindings + Python package | done | 39566f1 | crates/divsel-py/src/lib.rs, python/divsel/{__init__.py,_divsel.pyi}, python/tests/{test_api.py,fixtures.py}, crates/divsel/tests/shared_fixture.rs, pyproject.toml, .gitignore | — |
-| 8 | Benchmarks vs incumbents + installability matrix | in-progress | — | bench/compare.py, docs/benchmarks/README.md, .github/workflows/install-matrix.yml | see NEXT ACTION |
-| 9 | LangChain / LlamaIndex adapters | todo | — | — | after lot 8 |
+| 8 | Benchmarks vs incumbents + installability matrix | done | 818ef9c | bench/*, docs/benchmarks/*, .github/workflows/install-matrix.yml, .github/scripts/* | — |
+| 9 | LangChain / LlamaIndex adapters | in-progress | — | python/divsel/adapters/*, python/tests/test_adapters.py | see NEXT ACTION |
 | 10 | CI, wheels, 0.1.0 release | todo | — | — | after lot 9 |
 | 11 | Golden fixtures + CONFORMANCE.md | todo | — | — | after lot 10 |
 
