@@ -26,6 +26,17 @@ python-source = "python"
 
 [tool.maturin.generate-ci.github]
 trusted-publishing = true
+publishing-environment = "release"   # must match the PyPI trusted-publisher environment
+pytest = true
+
+[tool.maturin.generate-ci.github.linux]
+targets = ["x86_64", "aarch64"]
+
+[tool.maturin.generate-ci.github.windows]
+targets = ["x64", "aarch64"]
+
+[tool.maturin.generate-ci.github.macos]
+targets = ["x86_64", "aarch64"]
 
 [tool.pytest.ini_options]
 testpaths = ["python/tests"]

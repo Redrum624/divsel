@@ -1,0 +1,85 @@
+# Hand-written CI: Rust checks, the Python test matrix, and the aarch64 SIMD-parity
+# job. Wheel building + publishing is the generated .github/workflows/release.yml
+# (maturin generate-ci); installability measurement is install-matrix.yml.
+name: checks
+
+on:
+  push:
+    branches: [main, "feat/**"]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  rust:
+    name: rust (fmt, clippy, test, MSRV check)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - name: cargo fmt
+        run: cargo fmt --all --check
+      - name: cargo clippy
+        run: cargo clippy --all-targets --all-features -- -D warnings
+      - name: cargo test
+        run: cargo test --workspace
+      # MSRV gate: the published crate declares rust-version 1.83. Check only --
+      # criterion (dev-dependency, benches) needs 1.86, so `cargo test` cannot run
+      # on 1.83; `cargo check -p divsel` compiles the library alone.
+      - uses: dtolnay/rust-toolchain@1.83
+      - name: cargo check on MSRV 1.83
+        run: cargo +1.83 check -p divsel --locked
+
+  # Cross-ISA half of the bit-identity promise (R-G22): the metric:: tests assert
+  # the pulp SIMD distance kernels return bit-identical results to the scalar
+  # reference. The `rust` job proves it on x86_64 (AVX); this job proves it on
+  # aarch64 (NEON) -- same scalar reference, so the two ISAs agree bit-for-bit.
+  simd-parity:
+    name: simd parity (aarch64)
+    runs-on: ubuntu-24.04-arm
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@stable
+      - name: cargo test metric kernels on aarch64
+        run: "cargo test -p divsel metric::"
+
+  python:
+    name: python ${{ matrix.python }} / ${{ matrix.os }}${{ matrix.extras && ' + adapters' || '' }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+        python: ["3.11", "3.12", "3.13", "3.14"]
+        include:
+          # One cell also installs the adapter extras and runs their tests.
+          - os: ubuntu-latest
+            python: "3.12"
+            extras: true
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
+        with:
+          python-version: ${{ matrix.python }}
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Build and test
+        shell: bash
+        run: |
+          set -e
+          python -m venv .venv
+          if [ -f .venv/Scripts/activate ]; then source .venv/Scripts/activate; else source .venv/bin/activate; fi
+          pip install maturin pytest numpy
+          maturin develop --release
+          pytest python/tests -q
+      - name: Adapter extras
+        if: ${{ matrix.extras }}
+        shell: bash
+        run: |
+          set -e
+          source .venv/bin/activate
+          pip install ".[langchain,llamaindex]"
+          pytest python/tests/test_adapters.py -q
