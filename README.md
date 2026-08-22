@@ -27,7 +27,7 @@ import divsel
 vectors = np.random.default_rng(0).standard_normal((50, 8), dtype=np.float32)
 picked = divsel.gist_select(vectors, k=5, lam=1.0)      # diverse-but-relevant row indices
 full = divsel.gist_select_full(vectors, k=5, lam=1.0)   # + objective, diversity, threshold, stage
-print(picked, full["objective"])
+print(picked, full["f_value"])
 ```
 
 ## The problem
