@@ -18,6 +18,9 @@ llamaindex = ["llama-index-core>=0.12"]
 
 [tool.maturin]
 manifest-path = "crates/divsel-py/Cargo.toml"
+# Only maturin builds link as a Python extension; `cargo test` on the workspace
+# keeps linking the interpreter normally.
+features = ["pyo3/extension-module"]
 module-name = "divsel._divsel"
 python-source = "python"
 
