@@ -1,0 +1,1030 @@
+{
+ "generator": "divsel 0.1.0",
+ "paper": "arXiv:2405.18754v3",
+ "schema": 1,
+ "tolerance": {
+  "f_rel": 1e-06,
+  "selected": "exact"
+ },
+ "cases": [
+  {
+   "name": "line_pick_widest_scaled",
+   "note": "4 collinear points, uniform weights: the sweep's top threshold re-finds the diametrical pair and >= hands it the win [margin: 1.000e-01 rel]",
+   "metric": "euclidean",
+   "utility": "linear",
+   "vectors": [
+    [
+     0.0
+    ],
+    [
+     0.5
+    ],
+    [
+     2.5
+    ],
+    [
+     3.0
+    ]
+   ],
+   "utilities": null,
+   "k": 2,
+   "lam": 1.0,
+   "eps": 0.1,
+   "exhaustive_thresholds": false,
+   "diameter": "exact",
+   "diameter_sweeps": 3,
+   "expected_selected": [
+    0,
+    3
+   ],
+   "expected_f": 5.0,
+   "expected_g": 2.0,
+   "expected_div": 3.0,
+   "expected_threshold": 2.8791515827178955,
+   "expected_stage": "sweep",
+   "expected_d_max": 3.0
+  },
+  {
+   "name": "weighted_line_middle_threshold",
+   "note": "a middle threshold ties classic greedy on f and the >= rule hands the win to the larger threshold's selection [margin: exempt \u2014 f({0,2,4}) == f({0,4,5}) == 13 is an exact dyadic tie by construction \u2014 the >= rule choosing the later threshold IS the case]",
+   "metric": "euclidean",
+   "utility": "linear",
+   "vectors": [
+    [
+     0.0
+    ],
+    [
+     0.5
+    ],
+    [
+     1.0
+    ],
+    [
+     1.5
+    ],
+    [
+     2.0
+    ],
+    [
+     4.0
+    ]
+   ],
+   "utilities": [
+    4.0,
+    1.0,
+    4.0,
+    1.0,
+    4.0,
+    3.0
+   ],
+   "k": 3,
+   "lam": 1.0,
+   "eps": 0.1,
+   "exhaustive_thresholds": false,
+   "diameter": "exact",
+   "diameter_sweeps": 3,
+   "expected_selected": [
+    0,
+    4,
+    5
+   ],
+   "expected_f": 13.0,
+   "expected_g": 11.0,
+   "expected_div": 2.0,
+   "expected_threshold": 1.9699466228485107,
+   "expected_stage": "sweep",
+   "expected_d_max": 4.0
+  },
+  {
+   "name": "rectangle_short_return",
+   "note": "diameter tie resolved to the smaller-u pair; the answer holds only 2 of the 3 allowed points [margin: exempt \u2014 f({0,3}) == f({1,2}) == 7 is an exact dyadic tie by construction \u2014 the diameter tie rule (smaller u) IS the case]",
+   "metric": "euclidean",
+   "utility": "linear",
+   "vectors": [
+    [
+     0.0,
+     0.0
+    ],
+    [
+     3.0,
+     0.0
+    ],
+    [
+     0.0,
+     4.0
+    ],
+    [
+     3.0,
+     4.0
+    ]
+   ],
+   "utilities": null,
+   "k": 3,
+   "lam": 1.0,
+   "eps": 0.1,
+   "exhaustive_thresholds": false,
+   "diameter": "exact",
+   "diameter_sweeps": 3,
+   "expected_selected": [
+    0,
+    3
+   ],
+   "expected_f": 7.0,
+   "expected_g": 2.0,
+   "expected_div": 5.0,
+   "expected_threshold": 4.798585891723633,
+   "expected_stage": "sweep",
+   "expected_d_max": 5.0
+  },
+  {
+   "name": "pair_reached_by_sweep_tie",
+   "note": "the pair displaces greedy but the sweep's top threshold re-produces it, so >= relabels the stage to sweep [margin: 1.667e-01 rel]",
+   "metric": "euclidean",
+   "utility": "linear",
+   "vectors": [
+    [
+     0.0
+    ],
+    [
+     2.0
+    ],
+    [
+     3.0
+    ]
+   ],
+   "utilities": [
+    2.0,
+    1.0,
+    1.0
+   ],
+   "k": 2,
+   "lam": 1.0,
+   "eps": 0.1,
+   "exhaustive_thresholds": false,
+   "diameter": "exact",
+   "diameter_sweeps": 3,
+   "expected_selected": [
+    0,
+    2
+   ],
+   "expected_f": 6.0,
+   "expected_g": 3.0,
+   "expected_div": 3.0,
+   "expected_threshold": 2.8791515827178955,
+   "expected_stage": "sweep",
+   "expected_d_max": 3.0
+  },
+  {
+   "name": "near_duplicate_cluster_high_lambda",
+   "note": "4 near-identical high-weight points + 4 spread: at lam = 4 GIST keeps at most one cluster member [margin: 6.557e-03 rel]",
+   "metric": "euclidean",
+   "utility": "linear",
+   "vectors": [
+    [
+     0.0
+    ],
+    [
+     0.015625
+    ],
+    [
+     0.03125
+    ],
+    [
+     0.046875
+    ],
+    [
+     1.0
+    ],
+    [
+     2.0
+    ],
+    [
+     3.0
+    ],
+    [
+     4.0
+    ]
+   ],
+   "utilities": [
+    2.0625,
+    2.0,
+    1.9375,
+    1.875,
+    1.0,
+    1.0,
+    1.0,
+    1.0
+   ],
+   "k": 3,
+   "lam": 4.0,
+   "eps": 0.1,
+   "exhaustive_thresholds": false,
+   "diameter": "exact",
+   "diameter_sweeps": 3,
+   "expected_selected": [
+    0,
+    7
+   ],
+   "expected_f": 19.0625,
+   "expected_g": 3.0625,
+   "expected_div": 4.0,
+   "expected_threshold": 3.8388686180114746,
+   "expected_stage": "sweep",
+   "expected_d_max": 4.0
+  },
+  {
+   "name": "near_duplicate_cluster_lambda_zero",
+   "note": "same instance at lam = 0: pure weight maximisation keeps the whole cluster and the sweep never catches up [margin: 1.042e-02 rel]",
+   "metric": "euclidean",
+   "utility": "linear",
+   "vectors": [
+    [
+     0.0
+    ],
+    [
+     0.015625
+    ],
+    [
+     0.03125
+    ],
+    [
+     0.046875
+    ],
+    [
+     1.0
+    ],
+    [
+     2.0
+    ],
+    [
+     3.0
+    ],
+    [
+     4.0
+    ]
+   ],
+   "utilities": [
+    2.0625,
+    2.0,
+    1.9375,
+    1.875,
+    1.0,
+    1.0,
+    1.0,
+    1.0
+   ],
+   "k": 3,
+   "lam": 0.0,
+   "eps": 0.1,
+   "exhaustive_thresholds": false,
+   "diameter": "exact",
+   "diameter_sweeps": 3,
+   "expected_selected": [
+    0,
+    1,
+    2
+   ],
+   "expected_f": 6.0,
+   "expected_g": 6.0,
+   "expected_div": 0.015625,
+   "expected_threshold": 0.0,
+   "expected_stage": "greedy",
+   "expected_d_max": 4.0
+  },
+  {
+   "name": "k_one_div_equals_dmax",
+   "note": "k = 1: div(|S| <= 1) = d_max, the pair step is skipped, every threshold ties and the last one is reported [margin: 2.500e-01 rel]",
+   "metric": "euclidean",
+   "utility": "linear",
+   "vectors": [
+    [
+     0.0
+    ],
+    [
+     1.0
+    ],
+    [
+     2.0
+    ],
+    [
+     3.0
+    ],
+    [
+     4.0
+    ]
+   ],
+   "utilities": [
+    1.0,
+    4.0,
+    1.0,
+    1.0,
+    2.0
+   ],
+   "k": 1,
+   "lam": 1.0,
+   "eps": 0.1,
+   "exhaustive_thresholds": false,
+   "diameter": "exact",
+   "diameter_sweeps": 3,
+   "expected_selected": [
+    1
+   ],
+   "expected_f": 8.0,
+   "expected_g": 4.0,
+   "expected_div": 4.0,
+   "expected_threshold": 3.8388686180114746,
+   "expected_stage": "sweep",
+   "expected_d_max": 4.0
+  },
+  {
+   "name": "k_exceeds_n_returns_all",
+   "note": "k > n clamps: all n points are returned [margin: 1.765e-01 rel]",
+   "metric": "euclidean",
+   "utility": "linear",
+   "vectors": [
+    [
+     0.0
+    ],
+    [
+     1.0
+    ],
+    [
+     2.0
+    ],
+    [
+     4.0
+    ]
+   ],
+   "utilities": null,
+   "k": 10,
+   "lam": 0.25,
+   "eps": 0.1,
+   "exhaustive_thresholds": false,
+   "diameter": "exact",
+   "diameter_sweeps": 3,
+   "expected_selected": [
+    0,
+    1,
+    2,
+    3
+   ],
+   "expected_f": 4.25,
+   "expected_g": 4.0,
+   "expected_div": 1.0,
+   "expected_threshold": 0.9189946055412292,
+   "expected_stage": "sweep",
+   "expected_d_max": 4.0
+  },
+  {
+   "name": "sweep_tie_later_threshold_wins",
+   "note": "all 32 thresholds yield the identical selection; the ascending >= fold reports the largest one [margin: 1.667e-01 rel]",
+   "metric": "euclidean",
+   "utility": "linear",
+   "vectors": [
+    [
+     0.0
+    ],
+    [
+     4.0
+    ]
+   ],
+   "utilities": null,
+   "k": 2,
+   "lam": 1.0,
+   "eps": 0.1,
+   "exhaustive_thresholds": false,
+   "diameter": "exact",
+   "diameter_sweeps": 3,
+   "expected_selected": [
+    0,
+    1
+   ],
+   "expected_f": 6.0,
+   "expected_g": 2.0,
+   "expected_div": 4.0,
+   "expected_threshold": 3.8388686180114746,
+   "expected_stage": "sweep",
+   "expected_d_max": 4.0
+  },
+  {
+   "name": "argmax_tie_lowest_index",
+   "note": "two identical rows: every argmax tie (greedy pick, diameter pair) resolves to the lowest index [margin: exempt \u2014 f({0,2}) == f({1,2}) is an exact dyadic tie by construction]",
+   "metric": "euclidean",
+   "utility": "linear",
+   "vectors": [
+    [
+     0.0
+    ],
+    [
+     0.0
+    ],
+    [
+     4.0
+    ]
+   ],
+   "utilities": null,
+   "k": 2,
+   "lam": 1.0,
+   "eps": 0.1,
+   "exhaustive_thresholds": false,
+   "diameter": "exact",
+   "diameter_sweeps": 3,
+   "expected_selected": [
+    0,
+    2
+   ],
+   "expected_f": 6.0,
+   "expected_g": 2.0,
+   "expected_div": 4.0,
+   "expected_threshold": 3.8388686180114746,
+   "expected_stage": "sweep",
+   "expected_d_max": 4.0
+  },
+  {
+   "name": "diameter_pair_wins",
+   "note": "the diametrical pair strictly beats greedy and no sweep threshold matches it: stage diameter_pair, threshold = d_max [margin: 5.000e-02 rel]",
+   "metric": "euclidean",
+   "utility": "linear",
+   "vectors": [
+    [
+     -4.0
+    ],
+    [
+     0.0
+    ],
+    [
+     4.0
+    ]
+   ],
+   "utilities": [
+    1.0,
+    1.5,
+    1.0
+   ],
+   "k": 2,
+   "lam": 1.0,
+   "eps": 0.1,
+   "exhaustive_thresholds": false,
+   "diameter": "exact",
+   "diameter_sweeps": 3,
+   "expected_selected": [
+    0,
+    2
+   ],
+   "expected_f": 10.0,
+   "expected_g": 2.0,
+   "expected_div": 8.0,
+   "expected_threshold": 8.0,
+   "expected_stage": "diameter_pair",
+   "expected_d_max": 8.0
+  },
+  {
+   "name": "greedy_wins_outright",
+   "note": "a sub-threshold near-duplicate pair holds the best f: no sweep threshold can reproduce it, stage stays greedy [margin: 1.259e-01 rel]",
+   "metric": "euclidean",
+   "utility": "linear",
+   "vectors": [
+    [
+     0.0
+    ],
+    [
+     0.015625
+    ],
+    [
+     4.0
+    ]
+   ],
+   "utilities": [
+    4.0,
+    4.0,
+    1.0
+   ],
+   "k": 2,
+   "lam": 0.5,
+   "eps": 0.1,
+   "exhaustive_thresholds": false,
+   "diameter": "exact",
+   "diameter_sweeps": 3,
+   "expected_selected": [
+    0,
+    1
+   ],
+   "expected_f": 8.0078125,
+   "expected_g": 8.0,
+   "expected_div": 0.015625,
+   "expected_threshold": 0.0,
+   "expected_stage": "greedy",
+   "expected_d_max": 4.0
+  },
+  {
+   "name": "cosine_linear_random",
+   "note": "cosine metric (rows L2-normalised, dist = clamp(1 - a.b, 0, 2)) with dyadic linear weights [margin: 4.092e-03 rel]",
+   "metric": "cosine",
+   "utility": "linear",
+   "vectors": [
+    [
+     -3.84375,
+     1.46875,
+     -0.828125
+    ],
+    [
+     2.671875,
+     -3.546875,
+     3.5
+    ],
+    [
+     -1.53125,
+     0.34375,
+     1.453125
+    ],
+    [
+     1.53125,
+     -3.921875,
+     -3.484375
+    ],
+    [
+     3.46875,
+     -1.984375,
+     0.09375
+    ],
+    [
+     -3.609375,
+     -1.78125,
+     -1.71875
+    ]
+   ],
+   "utilities": [
+    3.046875,
+    1.546875,
+    0.875,
+    3.671875,
+    1.90625,
+    1.578125
+   ],
+   "k": 3,
+   "lam": 1.0,
+   "eps": 0.1,
+   "exhaustive_thresholds": false,
+   "diameter": "exact",
+   "diameter_sweeps": 3,
+   "expected_selected": [
+    3,
+    0,
+    1
+   ],
+   "expected_f": 9.07771635055542,
+   "expected_g": 8.265625,
+   "expected_div": 0.8120913505554199,
+   "expected_threshold": 0.803040623664856,
+   "expected_stage": "sweep",
+   "expected_d_max": 1.9730061292648315
+  },
+  {
+   "name": "cosine_facility_location_random",
+   "note": "facility location under cosine: sim = max(0, 1 - dist), scale = 1.0 (the paper's own s(i,j)) [margin: 4.825e-03 rel]",
+   "metric": "cosine",
+   "utility": "facility_location",
+   "vectors": [
+    [
+     1.828125,
+     0.9375,
+     1.875
+    ],
+    [
+     0.484375,
+     -2.171875,
+     -3.484375
+    ],
+    [
+     1.421875,
+     -2.625,
+     4.0
+    ],
+    [
+     -1.9375,
+     -1.125,
+     -1.609375
+    ],
+    [
+     -0.96875,
+     -2.9375,
+     0.453125
+    ],
+    [
+     3.625,
+     -0.265625,
+     3.25
+    ],
+    [
+     1.421875,
+     2.5625,
+     -2.453125
+    ]
+   ],
+   "utilities": null,
+   "k": 3,
+   "lam": 0.5,
+   "eps": 0.1,
+   "exhaustive_thresholds": false,
+   "diameter": "exact",
+   "diameter_sweeps": 3,
+   "expected_selected": [
+    2,
+    1,
+    6
+   ],
+   "expected_f": 5.854383200407028,
+   "expected_g": 5.470547914505005,
+   "expected_div": 0.7676705718040466,
+   "expected_threshold": 0.7372003197669983,
+   "expected_stage": "sweep",
+   "expected_d_max": 1.9923659563064575
+  },
+  {
+   "name": "facility_location_euclidean_n8",
+   "note": "facility location under euclidean: sim = max(0, 1 - dist/d_max), scale = the exact diameter [margin: 8.713e-03 rel]",
+   "metric": "euclidean",
+   "utility": "facility_location",
+   "vectors": [
+    [
+     -0.953125,
+     -0.09375
+    ],
+    [
+     3.921875,
+     -0.875
+    ],
+    [
+     1.453125,
+     -2.6875
+    ],
+    [
+     -2.8125,
+     -2.4375
+    ],
+    [
+     -1.609375,
+     -3.890625
+    ],
+    [
+     -0.328125,
+     2.671875
+    ],
+    [
+     2.734375,
+     -1.546875
+    ],
+    [
+     3.921875,
+     -2.125
+    ]
+   ],
+   "utilities": null,
+   "k": 3,
+   "lam": 1.0,
+   "eps": 0.1,
+   "exhaustive_thresholds": false,
+   "diameter": "exact",
+   "diameter_sweeps": 3,
+   "expected_selected": [
+    1,
+    3
+   ],
+   "expected_f": 12.585718346952355,
+   "expected_g": 5.672455026029503,
+   "expected_div": 6.913263320922852,
+   "expected_threshold": 6.913263320922852,
+   "expected_stage": "diameter_pair",
+   "expected_d_max": 6.913263320922852
+  },
+  {
+   "name": "facility_location_euclidean_n12",
+   "note": "three tight clusters of four: facility location (scale = d_max) wants one representative per cluster [margin: 6.311e-04 rel]",
+   "metric": "euclidean",
+   "utility": "facility_location",
+   "vectors": [
+    [
+     -3.0,
+     -3.0
+    ],
+    [
+     -2.75,
+     -2.625
+    ],
+    [
+     -3.5,
+     -2.875
+    ],
+    [
+     -2.625,
+     -3.4375
+    ],
+    [
+     0.0,
+     3.0
+    ],
+    [
+     -0.375,
+     3.25
+    ],
+    [
+     0.5,
+     2.875
+    ],
+    [
+     0.1875,
+     3.4375
+    ],
+    [
+     3.0,
+     -2.0
+    ],
+    [
+     3.4375,
+     -1.8125
+    ],
+    [
+     2.75,
+     -2.375
+    ],
+    [
+     2.5,
+     -1.625
+    ]
+   ],
+   "utilities": null,
+   "k": 3,
+   "lam": 0.5,
+   "eps": 0.1,
+   "exhaustive_thresholds": false,
+   "diameter": "exact",
+   "diameter_sweeps": 3,
+   "expected_selected": [
+    11,
+    0,
+    7
+   ],
+   "expected_f": 14.025384904554539,
+   "expected_g": 11.24255538146799,
+   "expected_div": 5.565659046173096,
+   "expected_threshold": 5.35598611831665,
+   "expected_stage": "sweep",
+   "expected_d_max": 7.428040027618408
+  },
+  {
+   "name": "coverage_hand_counts",
+   "note": "coverage marginals are newly-covered counts: 3+3 covered items beat the wider pair [margin: 2.069e-01 rel]",
+   "metric": "euclidean",
+   "utility": "coverage",
+   "vectors": [
+    [
+     0.0
+    ],
+    [
+     1.0
+    ],
+    [
+     2.5
+    ],
+    [
+     3.5
+    ]
+   ],
+   "utilities": [
+    [
+     0,
+     1,
+     2
+    ],
+    [
+     2,
+     3
+    ],
+    [
+     3,
+     4,
+     5
+    ],
+    [
+     0,
+     5
+    ]
+   ],
+   "k": 2,
+   "lam": 0.5,
+   "eps": 0.1,
+   "exhaustive_thresholds": false,
+   "diameter": "exact",
+   "diameter_sweeps": 3,
+   "expected_selected": [
+    0,
+    2
+   ],
+   "expected_f": 7.25,
+   "expected_g": 6.0,
+   "expected_div": 2.5,
+   "expected_threshold": 2.2942490577697754,
+   "expected_stage": "sweep",
+   "expected_d_max": 3.5
+  },
+  {
+   "name": "coverage_exact_tie_lowest_index",
+   "note": "an exact coverage-marginal tie resolves to the lowest index; an exact f tie then walks the >= fold to the top threshold [margin: exempt \u2014 f({0,1}) == f({0,2}) == pair f is an exact dyadic tie by construction]",
+   "metric": "euclidean",
+   "utility": "coverage",
+   "vectors": [
+    [
+     0.0
+    ],
+    [
+     1.0
+    ],
+    [
+     3.0
+    ]
+   ],
+   "utilities": [
+    [
+     0,
+     1
+    ],
+    [
+     2,
+     3
+    ],
+    [
+     4
+    ]
+   ],
+   "k": 2,
+   "lam": 0.5,
+   "eps": 0.1,
+   "exhaustive_thresholds": false,
+   "diameter": "exact",
+   "diameter_sweeps": 3,
+   "expected_selected": [
+    0,
+    2
+   ],
+   "expected_f": 4.5,
+   "expected_g": 3.0,
+   "expected_div": 3.0,
+   "expected_threshold": 2.8791515827178955,
+   "expected_stage": "sweep",
+   "expected_d_max": 3.0
+  },
+  {
+   "name": "exhaustive_thresholds_linear_n10",
+   "note": "exhaustive threshold set {dist(u,v)/2}: contains 0, so stage 'greedy' is unreachable here by construction [margin: 1.961e-02 rel]",
+   "metric": "euclidean",
+   "utility": "linear",
+   "vectors": [
+    [
+     -4.0
+    ],
+    [
+     -3.25
+    ],
+    [
+     -2.5
+    ],
+    [
+     -1.5
+    ],
+    [
+     -0.75
+    ],
+    [
+     0.0
+    ],
+    [
+     1.0
+    ],
+    [
+     1.75
+    ],
+    [
+     2.5
+    ],
+    [
+     4.0
+    ]
+   ],
+   "utilities": [
+    2.0,
+    0.25,
+    1.5,
+    0.5,
+    1.0,
+    0.75,
+    1.25,
+    0.25,
+    1.75,
+    2.25
+   ],
+   "k": 3,
+   "lam": 0.25,
+   "eps": 0.1,
+   "exhaustive_thresholds": true,
+   "diameter": "exact",
+   "diameter_sweeps": 3,
+   "expected_selected": [
+    9,
+    0,
+    8
+   ],
+   "expected_f": 6.375,
+   "expected_g": 6.0,
+   "expected_div": 1.5,
+   "expected_threshold": 1.5,
+   "expected_stage": "sweep",
+   "expected_d_max": 8.0
+  },
+  {
+   "name": "approx_diameter_double_sweep",
+   "note": "diameter='approx' (2 double sweeps): d_max is the documented farthest-point estimate d_hat and the sweep bound widens to 4/eps [margin: 1.553e-03 rel]",
+   "metric": "euclidean",
+   "utility": "linear",
+   "vectors": [
+    [
+     -4.0,
+     0.0
+    ],
+    [
+     4.0,
+     0.25
+    ],
+    [
+     -3.0,
+     3.0
+    ],
+    [
+     2.0,
+     -3.5
+    ],
+    [
+     0.0,
+     4.0
+    ],
+    [
+     3.5,
+     2.0
+    ],
+    [
+     -2.0,
+     -3.0
+    ],
+    [
+     1.0,
+     1.0
+    ],
+    [
+     -1.0,
+     2.5
+    ],
+    [
+     2.5,
+     -1.0
+    ],
+    [
+     -3.5,
+     -2.0
+    ],
+    [
+     0.5,
+     -4.0
+    ]
+   ],
+   "utilities": [
+    1.5,
+    1.25,
+    1.0,
+    1.0,
+    1.25,
+    0.75,
+    1.0,
+    0.5,
+    0.75,
+    1.0,
+    1.25,
+    1.0
+   ],
+   "k": 3,
+   "lam": 0.5,
+   "eps": 0.1,
+   "exhaustive_thresholds": false,
+   "diameter": "approx",
+   "diameter_sweeps": 2,
+   "expected_selected": [
+    0,
+    1
+   ],
+   "expected_f": 6.751952648162842,
+   "expected_g": 2.75,
+   "expected_div": 8.003905296325684,
+   "expected_threshold": 7.681485652923584,
+   "expected_stage": "sweep",
+   "expected_d_max": 8.003905296325684
+  }
+ ]
+}

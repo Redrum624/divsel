@@ -32,6 +32,10 @@ pulp  = "0.22"
 
 [dev-dependencies]
 criterion = "0.8"
+# Golden-fixture reader (tests/golden.rs) only. Deliberately NOT runtime
+# dependencies: the published library stays serde-free (R-G14).
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
 
 [[bench]]
 name = "gist"

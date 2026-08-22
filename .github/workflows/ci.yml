@@ -27,6 +27,11 @@ jobs:
         run: cargo clippy --all-targets --all-features -- -D warnings
       - name: cargo test
         run: cargo test --workspace
+      # Explicit golden-fixture gate: the Rust half of the cross-language
+      # conformance contract (docs/CONFORMANCE.md). Also part of the workspace
+      # run above; named here so a fixture regression is visible at a glance.
+      - name: golden conformance (rust reader)
+        run: cargo test -p divsel --test golden
       # MSRV gate: the published crate declares rust-version 1.83. Check only --
       # criterion (dev-dependency, benches) needs 1.86, so `cargo test` cannot run
       # on 1.83; `cargo check -p divsel` compiles the library alone.
@@ -75,6 +80,15 @@ jobs:
           pip install maturin pytest numpy
           maturin develop --release
           pytest python/tests -q
+      # Explicit golden-fixture gate: the Python half of the cross-language
+      # conformance contract (docs/CONFORMANCE.md). Also part of the run above;
+      # named here so a fixture regression is visible at a glance.
+      - name: golden conformance (python reader)
+        shell: bash
+        run: |
+          set -e
+          if [ -f .venv/Scripts/activate ]; then source .venv/Scripts/activate; else source .venv/bin/activate; fi
+          pytest python/tests/test_golden.py -q
       - name: Adapter extras
         if: ${{ matrix.extras }}
         shell: bash

@@ -203,6 +203,8 @@ dependencies = [
  "criterion",
  "pulp",
  "rayon",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]

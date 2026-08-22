@@ -1,0 +1,3 @@
+# The golden fixture is a byte-exact cross-language contract: no EOL
+# conversion, ever (core.autocrlf must not rewrite it on any platform).
+test-assets/*.json -text
