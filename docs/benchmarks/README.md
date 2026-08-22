@@ -98,7 +98,7 @@ the table into the job summary (`.github/scripts/assemble_matrix.py`). The divse
 on the checkout, so it needs the Rust toolchain the workflow installs with `dtolnay/rust-toolchain@stable`.
 The YAML was checked with `python -c "import yaml; yaml.safe_load(open('.github/workflows/install-matrix.yml'))"`
 and the cell script + assembler were exercised locally on two real cells (see the pip cross-check above);
-the workflow itself has not run, so those 24 cells are **not measured**.
+the workflow itself has not run, so those 32 cells are **not measured**.
 
 ## Comparison against the incumbents
 
