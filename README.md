@@ -22,10 +22,10 @@ where `g` is any monotone submodular utility (relevance, coverage, facility loca
 **GIST** — *Greedy Independent Set Thresholding for Max-Min Diversification with Submodular Utility*, Fahrbach, Ramalingam, Zadimoghaddam, Ahmadian, Citovsky & DeSalvo (Google Research), **NeurIPS 2025**, [arXiv:2405.18754](https://arxiv.org/abs/2405.18754) — is a strong result with no production-grade implementation. As of August 2026:
 
 - crates.io returns **one** result for `submodular`, and it is unrelated. No maintained Rust crate does submodular maximization, facility location, or GIST.
-- The two Python implementations are a 1-commit release with **no LICENSE file** and a 6-commit repo that was never published to PyPI.
+- The two Python implementations are a 1-commit release with **no LICENSE file in its repository** (the PyPI wheel does carry one) and a 6-commit repo that was never published to PyPI.
 - `submodlib` (131★) implements no combined `g(S) + λ·div(S)` objective at all, has been unmaintained since April 2025, and ships **no Windows wheels and no sdist** — you cannot install it on Windows, or on Python 3.13/3.14, at any price.
 
-So `divsel` aims at three things nobody currently offers together: **a real license, wheels that install everywhere, and benchmarks you can reproduce from the repo.**
+So `divsel` aims at three things nobody currently offers together: **a real license, wheels that install everywhere, and benchmarks you can reproduce from the repo.** The measurements behind these claims — the installability matrix, the comparison against `gist-select`, `gist-sampling` and MMR, and the incumbents' own README numbers re-run — are in [`docs/benchmarks/README.md`](docs/benchmarks/README.md), produced by `bench/compare.py`.
 
 ## Design commitments
 

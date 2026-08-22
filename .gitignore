@@ -11,3 +11,4 @@ __pycache__/
 /python/divsel/_divsel*.so
 *.egg-info/
 *.pdb
+/.venv-*

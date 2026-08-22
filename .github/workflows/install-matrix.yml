@@ -1,0 +1,110 @@
+name: install-matrix
+
+# Installability of divsel and the incumbents across 3 OSes x 4 Pythons. Every library is one
+# `continue-on-error` step that installs into its own fresh venv and writes an ok/fail JSON record
+# (with pip's output tail); the `assemble` job merges the records into
+# docs/benchmarks/install-matrix.json and prints the table into the job summary. Nothing here is
+# asserted -- a failing install is a measurement, not a failing build.
+
+on:
+  push:
+    branches: [main, "feat/**"]
+    paths:
+      - ".github/workflows/install-matrix.yml"
+      - ".github/scripts/**"
+      - "pyproject.toml"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - "crates/**"
+      - "python/**"
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  cell:
+    name: ${{ matrix.os }} / py${{ matrix.python }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+        python: ["3.11", "3.12", "3.13", "3.14"]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+
+      - name: Rust toolchain (divsel builds from source via maturin)
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Record interpreter
+        shell: bash
+        run: python -c "import sys, platform; print(sys.version); print(platform.platform())"
+
+      - name: gist-select (PyPI)
+        continue-on-error: true
+        shell: bash
+        run: bash .github/scripts/install_cell.sh gist-select "gist-select" gist install-cells
+
+      - name: submodlib-py (PyPI)
+        continue-on-error: true
+        shell: bash
+        run: bash .github/scripts/install_cell.sh submodlib-py "submodlib-py" submodlib install-cells
+
+      - name: gist-sampling (git)
+        continue-on-error: true
+        shell: bash
+        run: bash .github/scripts/install_cell.sh gist-sampling "git+https://github.com/musubi-labs/gist-sampling" gist_sampling install-cells
+
+      - name: divsel (this checkout, pip install .)
+        continue-on-error: true
+        shell: bash
+        run: bash .github/scripts/install_cell.sh divsel "." divsel install-cells
+
+      - name: Show this runner's cells
+        if: always()
+        shell: bash
+        run: |
+          for f in install-cells/*.json; do
+            python -c "import json,sys; r=json.load(open(sys.argv[1])); print(r['library'], r['os'], r['python'], r['status'], '--', r['first_line'])" "$f"
+          done
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: install-cell-${{ matrix.os }}-py${{ matrix.python }}
+          path: install-cells/
+          if-no-files-found: warn
+
+  assemble:
+    name: assemble matrix
+    needs: cell
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - uses: actions/download-artifact@v4
+        with:
+          path: install-cells
+          pattern: install-cell-*
+          merge-multiple: true
+
+      - name: Assemble docs/benchmarks/install-matrix.json and the summary table
+        shell: bash
+        run: |
+          python .github/scripts/assemble_matrix.py install-cells docs/benchmarks/install-matrix.json | tee -a "$GITHUB_STEP_SUMMARY"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: install-matrix
+          path: docs/benchmarks/install-matrix.json
