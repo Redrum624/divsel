@@ -25,7 +25,7 @@ where `g` is any monotone submodular utility (relevance, coverage, facility loca
 - The two Python implementations are a 1-commit release with **no LICENSE file in its repository** (the PyPI wheel does carry one) and a 6-commit repo that was never published to PyPI.
 - `submodlib` (131★) implements no combined `g(S) + λ·div(S)` objective at all, has been unmaintained since April 2025, and ships **no Windows wheels and no sdist** — you cannot install it on Windows, or on Python 3.13/3.14, at any price.
 
-So `divsel` aims at three things nobody currently offers together: **a real license, wheels that install everywhere, and benchmarks you can reproduce from the repo.** The measurements behind these claims — the installability matrix, the comparison against `gist-select`, `gist-sampling` and MMR, and the incumbents' own README numbers re-run — are in [`docs/benchmarks/README.md`](docs/benchmarks/README.md), produced by `bench/compare.py`.
+So `divsel` aims at three things nobody currently offers together: **a real license, wheels that install everywhere, and benchmarks you can reproduce from the repo.** The measurements behind these claims — the installability matrix (Windows measured; the 24 Linux/macOS cells pending the CI run; the abi3 wheel does not cover free-threaded 3.14t), the comparison against `gist-select`, `gist-sampling` and MMR, and the incumbents' own README numbers re-run — are in [`docs/benchmarks/README.md`](docs/benchmarks/README.md), produced by `bench/compare.py`.
 
 ## Design commitments
 

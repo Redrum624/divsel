@@ -223,9 +223,11 @@ Not comparable, and reported as `unavailable` in the tables with the reason the 
 
 ### Reading the tables
 
-* **Achieved `f(S)`.** In every Linear cell the methods that ran land within 0.4 % of each other
-  (k = 10: 10.9196 divsel, 10.9549 divsel approx, 10.9516 gist-select, 10.9505 MMR; k = 100: 100.3434,
-  100.3345, 100.3384, 99.9665). The three GIST implementations apply the same threshold formula
+* **Achieved `f(S)`.** In every Linear cell the methods that ran land within 0.5 % of each other.
+  The measured max-min spreads, from `results-2026-08-22.json`: n = 10k k = 10 **0.322 %** (10.9196
+  divsel ... 10.9549 divsel approx), k = 50 **0.463 %** (50.5043 MMR ... 50.7390 divsel approx),
+  k = 100 **0.376 %** (99.9665 MMR ... 100.3434 divsel), and n = 100k k = 10 **0.313 %** (10.9423
+  divsel ... 10.9766 MMR). The three GIST implementations apply the same threshold formula
   `(1+eps)^i * eps * d_max / 2` to different diameters -- divsel's exact `d_max = 1.2749`, the approximate
   estimates of `divsel[diameter=approx]` and of gist-select's 5-start double scan -- so their threshold grids,
   selections and `div` values differ; at `eps = 0.1` the grid step is 10 %, and the spread between them is
@@ -247,10 +249,15 @@ Not comparable, and reported as `unavailable` in the tables with the reason the 
   10 000 x 10 000 float64 matrices); MMR 65-104 MiB.
 * **The exact diameter at n = 100k.** divsel's pinned `diameter="exact"` call takes 209.3 s per call at
   n = 100k; the same call with `diameter="approx"` takes 1.552 s (f 10.9706 against 10.9423). At n = 10k,
-  k = 10 the exact call is 0.527 s and the approximate one 0.065 s. The bench header's
-  `n = 100_000` estimate (6-25 s "at perfect scaling", arithmetic on the per-pair kernel cost measured over
-  2016 cache-resident pairs) is therefore low by an order of magnitude for this shape: the 100k x 384
-  float32 set is 153 MB and the scan streams it once per row.
+  k = 10 the exact call is 0.527 s and the approximate one 0.065 s. The 209.3 s figure is a full cosine
+  `gist_select_full` call from Python (diameter scan + threshold sweep). The closest header estimate in
+  `crates/divsel/benches/gist.rs` is its whole-cell "UNMEASURED, est. 15-90 s" for
+  `gist/linear/n=100000`, exact diameter -- but that cell is Euclidean and Rust-only (its 6-25 s
+  arithmetic, from per-pair kernel cost over 2016 cache-resident pairs "at perfect scaling", covers the
+  diameter scan alone, "and the sweep adds more on top"). Against the 15-90 s whole-cell estimate the
+  measured 209.3 s is roughly 2.3x-14x, with metric and call path also differing. The header estimate
+  (Rust, out of scope here) should still be re-derived from measurement in a later task, at this cell's
+  actual metric and shape: the 100k x 384 float32 set is 153 MB and the scan streams it once per row.
 * **Self-check (divsel's own `f_value` against the evaluator).** Linear cells agree to at most 4.1e-8
   absolute. FacilityLocation cells differ by 5.8e-5 to 7.9e-5 absolute -- 4e-8 to 7e-8 relative on
   f = 837-1422 -- because divsel derives each similarity from a float32 distance (its SIMD kernel) and the
