@@ -78,10 +78,10 @@ def gist_select(
             universe is inferred as the largest id plus one, and a bitmap of that
             size is allocated, so ids must be dense (a huge sparse id allocates a
             bitmap of that size). For ``"facility_location"``, must be ``None``.
-        k: The budget; ``|S| <= k``. ``k > n`` is clamped to ``n``; ``k == 0``
-            raises ``ValueError``. The result can be shorter than ``k`` when no
-            remaining point is at least the winning threshold away from every
-            selected one.
+        k: The budget; ``|S| <= k``. Must be greater than zero: ``k <= 0``
+            raises ``ValueError``. ``k > n`` is clamped to ``n``. The result can
+            be shorter than ``k`` when no remaining point is at least the winning
+            threshold away from every selected one.
         lam: The weight of the diversity term, finite and ``>= 0``.
         eps: The sweep accuracy in ``(0, 1]``; the threshold set has
             ``1 + floor(log(2/eps) / log(1+eps))`` entries (32 at the default).
@@ -95,8 +95,9 @@ def gist_select(
         diameter: ``"exact"`` for the ``O(n^2)`` diameter scan the paper uses,
             ``"approx"`` for a farthest-point double sweep whose estimate lies in
             ``[d_max/2, d_max]``.
-        diameter_sweeps: Number of double sweeps under ``diameter="approx"``
-            (``0`` is treated as ``1``); ignored under ``"exact"``.
+        diameter_sweeps: Number of double sweeps under ``diameter="approx"``.
+            Must be ``>= 0`` (a negative value raises ``ValueError``); ``0`` is
+            treated as ``1``; ignored under ``"exact"``.
 
     Returns:
         The selected row indices, in selection order, at most ``k`` of them.
@@ -106,8 +107,9 @@ def gist_select(
             C-contiguous array, or a coverage ``utilities`` is not a sequence of
             int sequences.
         ValueError: An unknown ``metric``/``utility``/``diameter`` string,
-            ``k == 0``, ``eps`` outside ``(0, 1]``, a negative or non-finite
-            ``lam``, ``utilities`` whose length is not ``n``, a negative weight,
+            ``k <= 0``, a negative ``diameter_sweeps``, ``eps`` outside
+            ``(0, 1]``, a negative or non-finite ``lam``, ``utilities`` whose
+            length is not ``n``, a negative weight,
             a negative coverage id, a ``utilities`` array given with
             ``"facility_location"``, no ``utilities`` with ``"coverage"``, an
             empty or zero-dimensional ``vectors``, a NaN or infinite coordinate,

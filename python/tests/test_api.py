@@ -113,8 +113,31 @@ def test_unknown_diameter_mode_raises_valueerror_listing_the_choices():
 
 
 def test_k_zero_raises_valueerror():
-    with pytest.raises(ValueError, match="k"):
+    with pytest.raises(ValueError, match="greater than zero"):
         gist_select(_random_vectors(4, 2), k=0)
+
+
+@pytest.mark.parametrize("k", [-1, -(2**63)], ids=["minus_one", "i64_min"])
+def test_negative_k_raises_valueerror(k):
+    # Not pyo3's OverflowError from a usize extraction: a bad budget is a
+    # ValueError like every other bad argument, and the message names no Rust type.
+    x = _random_vectors(4, 2)
+    with pytest.raises(ValueError, match="greater than zero") as info:
+        gist_select(x, k=k)
+    assert "unsigned" not in str(info.value)
+    with pytest.raises(ValueError, match="greater than zero"):
+        gist_select_full(x, k=k)
+
+
+def test_negative_diameter_sweeps_raises_valueerror():
+    x = _random_vectors(4, 2)
+    with pytest.raises(ValueError, match="diameter_sweeps must be non-negative"):
+        gist_select(x, k=2, diameter="approx", diameter_sweeps=-1)
+    with pytest.raises(ValueError, match="diameter_sweeps must be non-negative"):
+        gist_select_full(x, k=2, diameter="approx", diameter_sweeps=-1)
+    # Rejected even under diameter="exact", where the value is otherwise unused.
+    with pytest.raises(ValueError, match="diameter_sweeps must be non-negative"):
+        gist_select(x, k=2, diameter_sweeps=-1)
 
 
 def test_facility_location_with_utilities_array_raises_valueerror():

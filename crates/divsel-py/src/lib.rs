@@ -175,15 +175,24 @@ fn solve(
     py: Python<'_>,
     vectors: &Bound<'_, PyAny>,
     utilities: Option<&Bound<'_, PyAny>>,
-    k: usize,
+    k: i64,
     lam: f64,
     eps: f32,
     metric: &str,
     utility: &str,
     exhaustive_thresholds: bool,
     diameter: &str,
-    diameter_sweeps: usize,
+    diameter_sweeps: i64,
 ) -> PyResult<GistResult> {
+    // Both budgets arrive as `i64` so that a negative Python int is a
+    // `ValueError` here rather than pyo3's `OverflowError` from a `usize`
+    // extraction. The core rejects `k == 0` too; folding it in keeps one message.
+    let k = usize::try_from(k)
+        .ok()
+        .filter(|&k| k > 0)
+        .ok_or_else(|| PyValueError::new_err("k must be greater than zero"))?;
+    let diameter_sweeps = usize::try_from(diameter_sweeps)
+        .map_err(|_| PyValueError::new_err("diameter_sweeps must be non-negative"))?;
     let metric = parse_metric(metric)?;
     let kind = parse_utility_kind(utility)?;
     let diameter = parse_diameter(diameter, diameter_sweeps)?;
@@ -261,14 +270,14 @@ fn gist_select(
     py: Python<'_>,
     vectors: &Bound<'_, PyAny>,
     utilities: Option<&Bound<'_, PyAny>>,
-    k: usize,
+    k: i64,
     lam: f64,
     eps: f32,
     metric: &str,
     utility: &str,
     exhaustive_thresholds: bool,
     diameter: &str,
-    diameter_sweeps: usize,
+    diameter_sweeps: i64,
 ) -> PyResult<Vec<usize>> {
     Ok(solve(
         py,
@@ -304,14 +313,14 @@ fn gist_select_full<'py>(
     py: Python<'py>,
     vectors: &Bound<'py, PyAny>,
     utilities: Option<&Bound<'py, PyAny>>,
-    k: usize,
+    k: i64,
     lam: f64,
     eps: f32,
     metric: &str,
     utility: &str,
     exhaustive_thresholds: bool,
     diameter: &str,
-    diameter_sweeps: usize,
+    diameter_sweeps: i64,
 ) -> PyResult<Bound<'py, PyDict>> {
     let result = solve(
         py,
