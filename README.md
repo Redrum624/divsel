@@ -1,9 +1,34 @@
 # divsel
 
-**Diverse subset selection that actually has a guarantee.** A native (Rust) implementation of **GIST** — max-min diversification with submodular utility — with zero-copy Python bindings.
+**Diverse subset selection that actually has a guarantee.** A native (Rust) implementation of **GIST** — max-min diversification with submodular utility — with Python bindings that are zero-copy for euclidean input (cosine makes exactly one L2-normalised copy).
 
-> Status: **0.0.1 scaffold — core implementation in progress**. Implementation plan:
-> [`docs/superpowers/plans/2026-08-21-divsel-v0.1.md`](docs/superpowers/plans/2026-08-21-divsel-v0.1.md)
+> Status: **0.1.0 — release candidate; publish pending.** Everything below is built and
+> tested; the crates.io / PyPI publish steps are listed in [`docs/RELEASE.md`](docs/RELEASE.md).
+> Changes: [`CHANGELOG.md`](CHANGELOG.md).
+
+## Install
+
+```
+pip install divsel      # Python: one abi3 wheel covers CPython 3.11-3.14 per platform
+cargo add divsel        # Rust: the core crate
+```
+
+Until 0.1.0 lands on PyPI/crates.io, install from a checkout instead: `pip install .`
+(needs a Rust toolchain, 1.83+). Free-threaded CPython 3.14t is served by a separate
+version-specific `cp314t` wheel, not the abi3 one. Adapter extras:
+`pip install "divsel[langchain]"` / `"divsel[llamaindex]"`.
+
+## Quick start
+
+```python
+import numpy as np
+import divsel
+
+vectors = np.random.default_rng(0).standard_normal((50, 8), dtype=np.float32)
+picked = divsel.gist_select(vectors, k=5, lam=1.0)      # diverse-but-relevant row indices
+full = divsel.gist_select_full(vectors, k=5, lam=1.0)   # + objective, diversity, threshold, stage
+print(picked, full["objective"])
+```
 
 ## The problem
 

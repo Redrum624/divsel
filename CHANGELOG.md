@@ -1,0 +1,42 @@
+# Changelog
+
+All notable changes to this project are documented in this file.
+
+The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
+and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
+
+## [0.1.0] - 2026-08-22
+
+First release.
+
+### Added
+
+- **GIST core** (`divsel` crate): Algorithm 1 of arXiv:2405.18754v3 (NeurIPS 2025) —
+  greedy independent set thresholding for `max f(S) = g(S) + λ · min-pairwise-distance(S)`
+  subject to `|S| ≤ k`, with the paper's geometric threshold set
+  (`1 + ⌊log(2/ε)/log(1+ε)⌋` thresholds), an optional exhaustive threshold mode,
+  and exact / approximate (double-sweep) diameter modes.
+- **Utilities**: monotone submodular `g` implementations — `Linear`, `Coverage`,
+  `FacilityLocation` — behind the `Utility` trait.
+- **CELF**: lazy-evaluation greedy (`greedy_independent_set`) for submodular `g`,
+  with a linear fast path where CELF cannot skip evaluations.
+- **Brute-force oracle** and guarantee tests: enumerates `OPT` on small instances and
+  asserts the `(1/2 − ε)·OPT` (submodular) and `(2/3 − ε)·OPT` (linear) bounds actually
+  hold on 500 random instances.
+- **SIMD kernels**: pulp-dispatched cosine/euclidean distance kernels that are
+  **bit-identical** to the scalar reference (fixed association order), tested per-ISA;
+  CI runs the parity tests on both x86_64 and aarch64.
+- **Parallel threshold sweep** via rayon (deterministic result independent of thread count).
+- **Python bindings** (`divsel` on PyPI): PyO3 `abi3-py311` — one wheel per platform covers
+  CPython 3.11–3.14 (free-threaded 3.14t gets a version-specific `cp314t` wheel);
+  zero-copy for `metric="euclidean"` input, exactly one L2-normalised copy for
+  `metric="cosine"`; `gist_select` / `gist_select_full` with type stubs (`py.typed`).
+- **Adapters** (optional extras): `divsel[langchain]` — `DivselRetriever` (drop-in for
+  `search_type="mmr"`); `divsel[llamaindex]` — `DivselNodePostprocessor`.
+- **Benchmarks**: reproducible comparison (`bench/compare.py`) against `gist-select`,
+  `gist-sampling` and a numpy MMR baseline, plus criterion benches for the native
+  kernels; results and the installability matrix in `docs/benchmarks/README.md`.
+- Golden fixtures (`golden-selection.json`, the cross-implementation conformance
+  contract): pending — added in the next change set.
+
+[0.1.0]: https://github.com/Redrum624/divsel/releases/tag/v0.1.0
