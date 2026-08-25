@@ -149,7 +149,7 @@ use std::hint::black_box;
 use std::sync::OnceLock;
 use std::time::Duration;
 
-use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion};
+use criterion::{criterion_group, BenchmarkId, Criterion};
 
 // `dot_scalar` / `sq_euclid_scalar` are `metric.rs`'s own bodies, re-exported
 // through the doc-hidden `testutil` module. This file used to carry a verbatim
@@ -460,4 +460,38 @@ criterion_group! {
     config = Criterion::default();
     targets = kernels, dispatch, gist_linear, gist_large
 }
-criterion_main!(benches);
+
+/// The body [`criterion_main!`](criterion::criterion_main) would generate, with
+/// one guard in front of it.
+///
+/// `Cargo.toml`'s `test = false` keeps this target out of a plain `cargo test`,
+/// but **not** out of `cargo test --all-targets`: that form selects every target
+/// regardless of the manifest's `test`/`bench` flags, and criterion then sees a
+/// command line without `--bench`, which is exactly how it decides to run in its
+/// libtest-compatible `Mode::Test` -- every benchmark once, fixtures and all. On
+/// this file that means the whole DEFAULT tier in an unoptimised build, and with
+/// `--all-features` the `bench-large` tier's ~3 GiB `n = 1000000` fixture too.
+///
+/// So: no `--bench` and no `--list` means we were run as a test, and a benchmark
+/// is not a test. `cargo bench -- --test` still reaches criterion's own test mode
+/// (cargo passes `--bench` there), which is the supported way to run every cell
+/// once as a smoke check.
+fn main() {
+    let mut is_bench = false;
+    let mut is_list = false;
+    for arg in std::env::args() {
+        is_bench |= arg == "--bench";
+        is_list |= arg == "--list";
+    }
+    if !is_bench && !is_list {
+        println!("benches/gist.rs is a benchmark, not a test: skipping the run");
+        println!("that `cargo test --all-targets` asks for, which would build every");
+        println!("fixture -- gigabytes of them under --all-features -- in a debug build.");
+        println!("Run `cargo bench -p divsel`, or `cargo bench -p divsel -- --test`");
+        println!("to execute every cell once.");
+        return;
+    }
+
+    benches();
+    Criterion::default().configure_from_args().final_summary();
+}

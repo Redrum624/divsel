@@ -417,6 +417,13 @@ mod tests {
     /// (4 lanes, four registers) covers the remaining register layouts, and the
     /// scalar fallback (1 lane, sixteen registers) is reachable on any host by
     /// building `pulp` without its `x86-v3` feature.
+    ///
+    /// On the two architectures this crate claims SIMD dispatch for the lane
+    /// count is **asserted**, not merely printed. At one lane the dispatched
+    /// kernel *is* the scalar body, so every equality below compares a value to
+    /// itself and the test proves nothing — which is precisely how a silent pulp
+    /// fallback on a CI runner would look. Elsewhere a one-lane arch is a
+    /// legitimate outcome and only the bit-identity claim is checked.
     #[test]
     fn the_dispatched_kernels_are_bit_identical_to_the_scalar_ones() {
         let lanes = arch().dispatch(LaneCount);
@@ -424,6 +431,13 @@ mod tests {
             "pulp selected {:?}: {lanes} f32 lane(s) per register, {} register(s) per {LANES}-element group",
             arch(),
             LANES / lanes.max(1)
+        );
+        #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
+        assert!(
+            lanes > 1,
+            "pulp selected {:?}, a {lanes}-lane arch, on a target that has SIMD: the comparisons \
+             below would then be the scalar body against itself and prove nothing",
+            arch()
         );
 
         for &dim in &PARITY_DIMS {

@@ -179,25 +179,78 @@ fn check_case(case: &Case, rel: f64) -> Vec<String> {
 ///
 /// Returns the fixture text, or `None` when the file is genuinely unreachable —
 /// a registry checkout, a vendored copy, an unpacked `target/package` tree. In
-/// **this workspace** it is never `None`: the sibling generator
-/// `python/tools/gen_golden.py` is the marker for "the checkout that owns the
-/// fixture", and when that is present a missing fixture is a hard failure, not a
-/// skip. CI runs from the checkout, so the contract stays gated there.
+/// **this workspace** it is never `None`; see [`missing_fixture_policy`] for how
+/// that is decided, and note that CI additionally sets `DIVSEL_REQUIRE_GOLDEN`,
+/// so the gate there cannot skip for any reason at all.
 fn fixture_text() -> Option<String> {
     const PATH: &str = concat!(
         env!("CARGO_MANIFEST_DIR"),
         "/../../test-assets/golden-selection.json"
     );
-    const GENERATOR: &str = concat!(
-        env!("CARGO_MANIFEST_DIR"),
-        "/../../python/tools/gen_golden.py"
-    );
+    const ROOT: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../..");
     match std::fs::read_to_string(PATH) {
         Ok(text) => Some(text),
-        Err(e) if std::path::Path::new(GENERATOR).exists() => {
-            panic!("cannot read the golden fixture file {PATH}: {e}")
-        }
-        Err(_) => None,
+        Err(e) => match missing_fixture_policy(required_by_env(), std::path::Path::new(ROOT)) {
+            Missing::Fail => panic!("cannot read the golden fixture file {PATH}: {e}"),
+            Missing::Skip => None,
+        },
+    }
+}
+
+/// What a missing fixture means.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Missing {
+    /// The checkout owns the fixture, so its absence is a broken checkout.
+    Fail,
+    /// The fixture was never shipped here; there is nothing to verify.
+    Skip,
+}
+
+/// `DIVSEL_REQUIRE_GOLDEN` set to anything but empty or `0`.
+fn required_by_env() -> bool {
+    required_from(std::env::var_os("DIVSEL_REQUIRE_GOLDEN").as_deref())
+}
+
+/// The parsing half of [`required_by_env`], separated so it is testable without
+/// mutating the process environment.
+fn required_from(value: Option<&std::ffi::OsStr>) -> bool {
+    match value {
+        None => false,
+        Some(value) => !value.is_empty() && value != "0",
+    }
+}
+
+/// Decides whether a missing fixture is a hard failure or a legitimate skip,
+/// from the environment plus what sits at the workspace root `root`.
+///
+/// The skip exists for exactly one situation: this reader compiled **outside**
+/// the repository that owns the fixture, because the file lives at the workspace
+/// root and `cargo package` cannot reach past a package root. Anything that says
+/// "you are in that repository" therefore turns the skip back into a failure.
+///
+/// Several markers, not one, and none of them may be the only coupling: an
+/// earlier version keyed the whole decision on `python/tools/gen_golden.py`, an
+/// unrelated file that a refactor is free to move — and moving it while the
+/// fixture was also absent turned the 22-case contract into `1 passed` having
+/// checked nothing. `DIVSEL_REQUIRE_GOLDEN` short-circuits all of it, which is
+/// what CI sets: a gate that can decide it has nothing to gate is not a gate.
+fn missing_fixture_policy(required: bool, root: &std::path::Path) -> Missing {
+    if required {
+        return Missing::Fail;
+    }
+    let owns_the_fixture = root.join(".git").exists()
+        || root.join("test-assets").is_dir()
+        || root
+            .join("python")
+            .join("tools")
+            .join("gen_golden.py")
+            .exists()
+        || std::fs::read_to_string(root.join("Cargo.toml"))
+            .is_ok_and(|manifest| manifest.contains("[workspace]"));
+    if owns_the_fixture {
+        Missing::Fail
+    } else {
+        Missing::Skip
     }
 }
 
@@ -247,4 +300,94 @@ fn divsel_reproduces_the_golden_fixtures() {
         golden.cases.len(),
         failures.join("\n")
     );
+}
+
+/// `DIVSEL_REQUIRE_GOLDEN` is read the way CI sets it, and an unset or disabled
+/// value leaves the decision to the markers.
+#[test]
+fn the_require_golden_override_is_read_the_way_ci_sets_it() {
+    use std::ffi::OsStr;
+    assert!(!required_from(None));
+    assert!(!required_from(Some(OsStr::new(""))));
+    assert!(!required_from(Some(OsStr::new("0"))));
+    assert!(required_from(Some(OsStr::new("1"))));
+    assert!(required_from(Some(OsStr::new("true"))));
+}
+
+/// A missing fixture is a **failure** in any tree that looks like this
+/// repository, and a skip only where the fixture was never shipped.
+///
+/// The regression this pins: keying the decision on `python/tools/gen_golden.py`
+/// alone meant that moving the generator — a refactor nothing forbids — while
+/// the fixture was also absent made `cargo test -p divsel --test golden` report
+/// `1 passed` with zero of the 22 cases checked, which is the CI gate for the
+/// whole cross-language contract.
+#[test]
+fn a_missing_fixture_only_skips_outside_the_repository_that_owns_it() {
+    let root = std::env::temp_dir().join(format!(
+        "divsel-golden-policy-{}-{:?}",
+        std::process::id(),
+        std::thread::current().id()
+    ));
+    let _ = std::fs::remove_dir_all(&root);
+    std::fs::create_dir_all(&root).expect("scratch root");
+
+    // Nothing at all: an unpacked `.crate`, a registry checkout, a vendor tree.
+    assert_eq!(missing_fixture_policy(false, &root), Missing::Skip);
+    // ... unless CI asked for the gate explicitly.
+    assert_eq!(missing_fixture_policy(true, &root), Missing::Fail);
+
+    // Each marker on its own is enough, and each is independent of the others.
+    for marker in [
+        "test-assets",
+        ".git",
+        "python/tools/gen_golden.py",
+        "Cargo.toml",
+    ] {
+        let case = root.join(marker.replace(['/', '.'], "_"));
+        let _ = std::fs::remove_dir_all(&case);
+        std::fs::create_dir_all(&case).expect("case root");
+        assert_eq!(
+            missing_fixture_policy(false, &case),
+            Missing::Skip,
+            "{marker}: empty case root is not a skip"
+        );
+        match marker {
+            "test-assets" | ".git" => {
+                std::fs::create_dir_all(case.join(marker)).expect("marker dir");
+            }
+            "Cargo.toml" => {
+                std::fs::write(case.join(marker), "[workspace]\nmembers = []\n")
+                    .expect("marker file");
+            }
+            _ => {
+                std::fs::create_dir_all(case.join("python").join("tools")).expect("marker dirs");
+                std::fs::write(case.join(marker), "# generator\n").expect("marker file");
+            }
+        }
+        assert_eq!(
+            missing_fixture_policy(false, &case),
+            Missing::Fail,
+            "{marker} did not mark the tree as owning the fixture"
+        );
+        let _ = std::fs::remove_dir_all(&case);
+    }
+
+    // A package-root manifest is not a workspace manifest.
+    let package = root.join("package");
+    std::fs::create_dir_all(&package).expect("package root");
+    std::fs::write(package.join("Cargo.toml"), "[package]\nname = \"divsel\"\n")
+        .expect("package manifest");
+    assert_eq!(missing_fixture_policy(false, &package), Missing::Skip);
+
+    // And the tree this test is compiled in owns the fixture.
+    assert_eq!(
+        missing_fixture_policy(
+            false,
+            std::path::Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/../.."))
+        ),
+        Missing::Fail
+    );
+
+    let _ = std::fs::remove_dir_all(&root);
 }

@@ -46,8 +46,13 @@ serde_json = "1"
 [[bench]]
 name = "gist"
 harness = false
-# criterion's harness has a libtest-compatible test mode, and `cargo test
-# --all-targets` would use it to run every benchmark once -- including the
-# `bench-large` fixtures, which allocate gigabytes before they measure anything.
-# Benchmarks are not tests here; `test = false` keeps them out of that run.
+# criterion's harness has a libtest-compatible test mode that runs every
+# benchmark once, fixtures included -- gigabytes of them in the `bench-large`
+# tier. Benchmarks are not tests here, so `test = false` keeps this target out
+# of a plain `cargo test` / `cargo test --workspace`, which is what CI runs.
+#
+# It does NOT keep it out of `cargo test --all-targets`: that form selects every
+# target regardless of the manifest's `test` and `bench` flags, and criterion
+# then sees a command line without `--bench` and enters its test mode. The guard
+# for that one is in `benches/gist.rs`'s own `main`.
 test = false
