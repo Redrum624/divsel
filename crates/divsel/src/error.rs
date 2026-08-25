@@ -69,9 +69,11 @@ pub enum DivselError {
         /// Number of items in the coverage universe.
         universe: usize,
     },
-    /// The requested subset size `k` was out of range.
+    /// The requested subset size `k` was zero. (A `k` above the number of
+    /// points is clamped, not rejected.)
     InvalidK,
-    /// The requested epsilon was out of range.
+    /// The requested epsilon was outside `0 < eps <= 1` (which also rejects
+    /// `NaN` and the infinities).
     InvalidEps(f32),
     /// The requested lambda was out of range.
     InvalidLambda(f64),
@@ -114,13 +116,10 @@ impl fmt::Display for DivselError {
                 f,
                 "coverage item {item} at row {row} is outside the universe of {universe} items"
             ),
-            Self::InvalidK => write!(
-                f,
-                "k must be greater than zero and at most the number of points"
-            ),
+            Self::InvalidK => write!(f, "k must be greater than zero"),
             Self::InvalidEps(eps) => write!(
                 f,
-                "epsilon {eps} must be finite and strictly between 0 and 1"
+                "epsilon {eps} must be in the range 0 < eps <= 1"
             ),
             Self::InvalidLambda(lambda) => {
                 write!(f, "lambda {lambda} must be finite and non-negative")

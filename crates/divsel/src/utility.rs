@@ -40,6 +40,11 @@ pub trait Utility: Send + Sync {
     fn marginal(&self, v: usize, selected: &[usize], pts: &Points<'_>) -> f64;
 
     /// Called after `v` is committed so caches can update.
+    ///
+    /// # Panics
+    ///
+    /// As for [`Utility::marginal`]: the built-ins index a per-point table by
+    /// `v`, so an out-of-range `v` panics.
     fn commit(&mut self, v: usize, pts: &Points<'_>);
 
     /// Return to the empty-selection state.
@@ -60,6 +65,14 @@ pub trait Utility: Send + Sync {
     }
 
     /// Clone into a box so callers can run independent copies on parallel threads.
+    ///
+    /// The clone must be **faithful**: it carries the selection state `self`
+    /// holds at the moment of cloning, returns the same marginals for the same
+    /// sequence of commits, and shares no mutable state with `self`. The GIST
+    /// driver scores every sweep threshold on a worker's clone and then recovers
+    /// the winning selection by re-running that threshold on the original; a
+    /// clone whose marginals differ would hand back scalars from one utility and
+    /// a selection from another, and nothing in `divsel` can detect that.
     fn boxed_clone(&self) -> Box<dyn Utility>;
 }
 
@@ -112,6 +125,11 @@ impl Utility for Linear {
         true
     }
 
+    /// # Errors
+    ///
+    /// Returns [`DivselError::WeightsLength`] when there is not exactly one
+    /// weight per point, then [`DivselError::InvalidWeight`] for the first
+    /// weight that is negative, `NaN` or infinite.
     fn validate(&self, pts: &Points<'_>) -> Result<(), DivselError> {
         if self.weights.len() != pts.n() {
             return Err(DivselError::WeightsLength {
@@ -141,9 +159,8 @@ impl Utility for Linear {
 pub struct Coverage {
     /// The item ids each point covers, deduplicated and ascending.
     sets: Vec<Vec<u32>>,
-    /// Number of items in the coverage universe; every id is `< universe`.
-    universe: usize,
     /// Which items the current selection already covers, indexed by item id.
+    /// Its length is the universe: every id is `< covered.len()`.
     covered: Vec<bool>,
 }
 
@@ -174,14 +191,13 @@ impl Coverage {
         }
         Ok(Self {
             sets,
-            universe,
             covered: vec![false; universe],
         })
     }
 
     /// Number of items in the coverage universe.
     pub fn universe(&self) -> usize {
-        self.universe
+        self.covered.len()
     }
 }
 
@@ -205,6 +221,10 @@ impl Utility for Coverage {
         self.covered.fill(false);
     }
 
+    /// # Errors
+    ///
+    /// Returns [`DivselError::CoverageLength`] when there is not exactly one
+    /// item list per point. (Item ids were already bounded by [`Coverage::new`].)
     fn validate(&self, pts: &Points<'_>) -> Result<(), DivselError> {
         if self.sets.len() != pts.n() {
             return Err(DivselError::CoverageLength {
@@ -317,6 +337,13 @@ impl FacilityLocation {
 
 impl Utility for FacilityLocation {
     fn marginal(&self, v: usize, _selected: &[usize], pts: &Points<'_>) -> f64 {
+        // The loop runs over the cache, so an undersized cache would silently
+        // drop the tail of the point set instead of panicking.
+        debug_assert_eq!(
+            self.best.len(),
+            pts.n(),
+            "facility-location cache was built for a different point set"
+        );
         let mut total = 0.0;
         for (i, &best) in self.best.iter().enumerate() {
             total += (self.sim(i, v, pts) - best).max(0.0);
@@ -325,6 +352,11 @@ impl Utility for FacilityLocation {
     }
 
     fn commit(&mut self, v: usize, pts: &Points<'_>) {
+        debug_assert_eq!(
+            self.best.len(),
+            pts.n(),
+            "facility-location cache was built for a different point set"
+        );
         for i in 0..self.best.len() {
             let similarity = self.sim(i, v, pts);
             if similarity > self.best[i] {
@@ -500,6 +532,46 @@ mod tests {
                 linear.marginal(v, &[], &pts).to_bits()
             );
         }
+    }
+
+    #[test]
+    fn coverage_boxed_clone_is_faithful_and_independent() {
+        let pts = four_points();
+        let mut coverage = coverage_fixture();
+        coverage.commit(0, &pts);
+        let mut cloned: Box<dyn Utility> = coverage.boxed_clone();
+        assert!(!cloned.is_linear());
+        // Faithful: the clone carries the committed state, marginal for marginal.
+        for v in 0..pts.n() {
+            assert_eq!(
+                cloned.marginal(v, &[0], &pts),
+                coverage.marginal(v, &[0], &pts),
+                "marginal of {v}"
+            );
+        }
+        // Independent: a commit on the clone leaves the original untouched.
+        cloned.commit(3, &pts);
+        assert_eq!(cloned.marginal(3, &[0, 3], &pts), 0.0);
+        assert_eq!(coverage.marginal(3, &[0], &pts), 2.0);
+    }
+
+    #[test]
+    fn facility_location_boxed_clone_is_faithful_and_independent() {
+        let pts = triangle();
+        let mut fl = FacilityLocation::new(&pts);
+        fl.commit(0, &pts);
+        let mut cloned: Box<dyn Utility> = fl.boxed_clone();
+        assert!(!cloned.is_linear());
+        for v in 0..pts.n() {
+            assert_eq!(
+                cloned.marginal(v, &[0], &pts).to_bits(),
+                fl.marginal(v, &[0], &pts).to_bits(),
+                "marginal of {v}"
+            );
+        }
+        cloned.commit(1, &pts);
+        assert_eq!(cloned.marginal(1, &[0, 1], &pts), 0.0);
+        assert_close(fl.marginal(1, &[0], &pts), 0.6);
     }
 
     // ---- Coverage ---------------------------------------------------------

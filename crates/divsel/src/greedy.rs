@@ -69,8 +69,12 @@ use crate::utility::Utility;
 /// CELF cannot skip a single evaluation -- every cached gain is already exact
 /// and the heap only adds bookkeeping. This function therefore takes a plain
 /// scan for linear utilities and builds the heap only when there is something to
-/// be lazy about. Both paths return the same vector; see
-/// [`greedy_independent_set_naive`].
+/// be lazy about. For a submodular `util` both paths return the same vector (see
+/// [`greedy_independent_set_naive`], the oracle that equality is tested against).
+/// A utility that is **not** submodular voids that equality: a cached gain may
+/// then under-estimate the true one and the lazy path can hand back a point the
+/// plain scan would not have picked -- silently, since nothing here can detect
+/// it. The [`Utility`] contract requires submodularity for exactly this reason.
 ///
 /// # Panics
 ///
@@ -114,11 +118,14 @@ struct Frontier {
     nearest: Vec<f32>,
     /// `chosen[v]` is whether `v` is in `S`.
     ///
-    /// Redundant with the sentinel in `nearest` on purpose. The membership half
-    /// of line 4 (`v in V \ S`) has to be enforced explicitly, because at
-    /// `d == 0` the distance half admits a selected point right back in
-    /// (`dist(v, S) == 0 >= 0`); with a linear utility the argmax would then
-    /// return the same point every round.
+    /// Redundant with the sentinel in `nearest` on purpose: once `v` is taken,
+    /// `nearest[v]` is `NEG_INFINITY`, which fails `>= d` for every threshold
+    /// the driver passes (`d >= 0`), so either guard alone enforces the
+    /// membership half of line 4 (`v in V \ S`). Both are kept because that
+    /// half *must* hold and neither guard is where a reader expects it: at
+    /// `d == 0` the distance half of line 4 would admit a selected point right
+    /// back in (`dist(v, S) == 0 >= 0`), and with a linear utility the argmax
+    /// would then return the same point every round.
     chosen: Vec<bool>,
     /// The selection, in selection order.
     selected: Vec<usize>,
@@ -277,7 +284,10 @@ fn run_celf(pts: &Points<'_>, util: &mut dyn Utility, d: f32, k: usize) -> Vec<u
             };
             let index = entry.index.0;
             // `nearest` only ever decreases and `chosen` never reverts, so an
-            // entry that fails the filter now can never pass it again.
+            // entry that fails the filter now can never pass it again. The
+            // `chosen` half is unreachable for any `d >= 0` -- a taken point's
+            // `nearest` is `NEG_INFINITY` -- and kept as the second, independent
+            // guard described on `Frontier::chosen`.
             if frontier.chosen[index] || frontier.nearest[index] < d {
                 continue;
             }
@@ -400,10 +410,14 @@ mod tests {
         assert_eq!(greedy_independent_set(&pts, &mut util, 0.0, 6), want);
         assert_eq!(greedy_independent_set(&pts, &mut util, 0.0, 3), &want[..3]);
 
-        // The naive reference agrees, and so does the CELF path when the same
-        // weights are hidden behind a utility that does not advertise linearity.
+        // For a linear utility `greedy_independent_set_naive` *is* the plain
+        // scan the call above took, so this line only pins that the two entry
+        // points agree on the linear fast path -- it is not a cross-path check.
         assert_eq!(greedy_independent_set_naive(&pts, &mut util, 0.0, 6), want);
+        // The real cross-path check: the same weights hidden behind a utility
+        // that does not advertise linearity, which forces the CELF heap.
         let mut lying = Counting::new(line_six_weights(), false);
+        assert!(!lying.is_linear());
         assert_eq!(greedy_independent_set(&pts, &mut lying, 0.0, 6), want);
     }
 
@@ -541,9 +555,9 @@ mod tests {
             assert_eq!(lazy, naive, "trial {trial} ({metric:?}), d = {d}");
             selected += lazy.len();
         }
-        // Out of a possible 800; measured here: 524 for facility location, 494
-        // for coverage. A threshold that always emptied C after the first pick
-        // would make the comparison above trivially true.
+        // Out of a possible 800; measured here: 494. A threshold that always
+        // emptied C after the first pick would make the comparison above
+        // trivially true.
         assert!(
             selected >= 400,
             "only {selected} points selected over 100 instances; the comparison \
@@ -577,9 +591,9 @@ mod tests {
             assert_eq!(lazy, naive, "trial {trial} ({metric:?}), d = {d}");
             selected += lazy.len();
         }
-        // Out of a possible 800; measured here: 524 for facility location, 494
-        // for coverage. A threshold that always emptied C after the first pick
-        // would make the comparison above trivially true.
+        // Out of a possible 800; measured here: 524. A threshold that always
+        // emptied C after the first pick would make the comparison above
+        // trivially true.
         assert!(
             selected >= 400,
             "only {selected} points selected over 100 instances; the comparison \

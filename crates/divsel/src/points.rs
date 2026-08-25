@@ -2,6 +2,7 @@
 
 use std::borrow::Cow;
 use std::cmp::Ordering;
+use std::fmt;
 
 use rayon::iter::{IntoParallelIterator, ParallelIterator};
 
@@ -17,7 +18,9 @@ const NO_PAIR: (f32, usize, usize) = (f32::NEG_INFINITY, usize::MAX, usize::MAX)
 /// smaller `j` wins.
 ///
 /// Being a total order, the winner is the same however `rayon` splits the work.
-fn better_pair(a: (f32, usize, usize), b: (f32, usize, usize)) -> (f32, usize, usize) {
+/// [`crate::gist::approx_diameter`] folds its sweeps with the same function, so
+/// the two diameter modes agree on the tie rule.
+pub(crate) fn better_pair(a: (f32, usize, usize), b: (f32, usize, usize)) -> (f32, usize, usize) {
     match a.0.total_cmp(&b.0) {
         Ordering::Greater => a,
         Ordering::Less => b,
@@ -90,12 +93,26 @@ fn normalize_rows(data: &mut [f32], dim: usize) -> Result<(), DivselError> {
 /// point at an existing slice. Borrowing is zero-copy for [`Metric::Euclidean`];
 /// [`Metric::Cosine`] always L2-normalizes into an owned copy, so that
 /// [`Points::dist`] is a plain `1 - dot`.
-#[derive(Clone, Debug)]
+///
+/// The [`fmt::Debug`] output is the shape (`n`, `dim`, `metric`, whether the
+/// buffer is borrowed), never the coordinates themselves.
+#[derive(Clone)]
 pub struct Points<'a> {
     data: Cow<'a, [f32]>,
     n: usize,
     dim: usize,
     metric: Metric,
+}
+
+impl fmt::Debug for Points<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Points")
+            .field("n", &self.n)
+            .field("dim", &self.dim)
+            .field("metric", &self.metric)
+            .field("borrowed", &matches!(self.data, Cow::Borrowed(_)))
+            .finish_non_exhaustive()
+    }
 }
 
 impl<'a> Points<'a> {
@@ -195,6 +212,9 @@ impl<'a> Points<'a> {
     ///
     /// Panics if `i >= self.n()`.
     pub fn row(&self, i: usize) -> &[f32] {
+        // The slice bounds catch this too, but only after `i * dim` -- which
+        // wraps in release for an absurd `i` and would hand back a wrong row.
+        debug_assert!(i < self.n, "row {i} is out of range for {} points", self.n);
         &self.data[i * self.dim..(i + 1) * self.dim]
     }
 
@@ -204,8 +224,15 @@ impl<'a> Points<'a> {
     ///
     /// # Panics
     ///
-    /// Panics if `i >= self.n()` or `j >= self.n()`.
+    /// Panics if `i >= self.n()` or `j >= self.n()`. (`dist(i, i)` for an
+    /// out-of-range `i` returns `0.0` in release, since the short circuit runs
+    /// before any row is touched; a debug build asserts the bounds first.)
     pub fn dist(&self, i: usize, j: usize) -> f32 {
+        debug_assert!(
+            i < self.n && j < self.n,
+            "dist({i}, {j}) is out of range for {} points",
+            self.n
+        );
         if i == j {
             return 0.0;
         }
@@ -251,7 +278,7 @@ impl<'a> Points<'a> {
 mod tests {
     use super::Points;
     use crate::error::DivselError;
-    use crate::metric::Metric;
+    use crate::metric::{dot, Metric};
 
     const TOL: f32 = 1e-6;
 
@@ -378,6 +405,20 @@ mod tests {
     }
 
     #[test]
+    fn debug_output_is_the_shape_not_the_buffer() {
+        let data = vec![1.5f32; 12];
+        let owned = Points::new(data.clone(), 4, Metric::Euclidean).unwrap();
+        assert_eq!(
+            format!("{owned:?}"),
+            "Points { n: 3, dim: 4, metric: Euclidean, borrowed: false, .. }"
+        );
+        let borrowed = Points::borrowed(&data, 3, Metric::Euclidean).unwrap();
+        let rendered = format!("{borrowed:?}");
+        assert!(rendered.contains("n: 4") && rendered.contains("borrowed: true"));
+        assert!(!rendered.contains("1.5"), "{rendered}");
+    }
+
+    #[test]
     fn row_returns_the_requested_slice() {
         let data = vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0];
         let pts = Points::new(data, 3, Metric::Euclidean).unwrap();
@@ -448,6 +489,43 @@ mod tests {
     fn cosine_distance_between_opposite_directions_is_two() {
         let pts = Points::new(vec![1.0, 0.0, -4.0, 0.0], 2, Metric::Cosine).unwrap();
         assert_close(pts.dist(0, 1), 2.0);
+    }
+
+    #[test]
+    fn cosine_distance_is_clamped_to_exactly_zero_and_two() {
+        // A row, its negation and a copy of it. After normalisation `dot(a, a)`
+        // can round to a hair above 1, so the raw `1 - dot` is a hair below 0
+        // for the copy and -- since negation is exact -- the same hair above 2
+        // for the negation. The clamp pins both ends to the exact constants.
+        let mut clamped = 0usize;
+        for seed in 0..64u32 {
+            let dim = 3 + seed as usize % 13;
+            let row = sample(1, dim, 0xc1a4_0000 ^ seed);
+            let mut data = row.clone();
+            data.extend(row.iter().map(|x| -x));
+            data.extend(&row);
+            let pts = Points::new(data, dim, Metric::Cosine).unwrap();
+
+            let raw_copy = 1.0 - dot(pts.row(0), pts.row(2));
+            let raw_negation = 1.0 - dot(pts.row(0), pts.row(1));
+            assert_eq!(raw_negation, 2.0 - raw_copy);
+            if raw_copy < 0.0 {
+                clamped += 1;
+                assert_eq!(pts.dist(0, 2).to_bits(), 0.0f32.to_bits(), "seed {seed}");
+                assert_eq!(pts.dist(0, 1).to_bits(), 2.0f32.to_bits(), "seed {seed}");
+            }
+            assert!(
+                pts.dist(0, 2) >= 0.0 && pts.dist(0, 1) <= 2.0,
+                "seed {seed}"
+            );
+            assert_eq!(pts.dist(0, 2).to_bits(), pts.dist(2, 0).to_bits());
+        }
+        // Guards the guard: without a seed that actually overshoots, the
+        // assertions above never see the clamp do anything.
+        assert!(
+            clamped > 0,
+            "no seed produced a raw 1 - dot outside [0, 2]; the clamp went unexercised"
+        );
     }
 
     #[test]

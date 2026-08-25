@@ -87,7 +87,14 @@
 //! under `--quick` and 3.20 s in a full run of the *current* code -- which does
 //! one greedy run *more* per `gist` call than the code `--quick` measured. The
 //! gap is the measurement protocol, not the algorithm, so treat those two rows
-//! as upper bounds and re-measure before quoting them.
+//! as upper bounds and re-measure before quoting them:
+//!
+//! ```text
+//! cargo bench -p divsel --features bench-large -- --exact "gist/facility_location/n=10000/dim=64/k=10"
+//! cargo bench -p divsel --features bench-large -- --exact "gist/facility_location/n=10000/dim=64/k=100"
+//! cargo bench -p divsel --features bench-large -- --exact "gist/facility_location/n=10000/dim=384/k=10"
+//! cargo bench -p divsel --features bench-large -- --exact "gist/facility_location/n=10000/dim=384/k=100"
+//! ```
 //!
 //! The `n = 100_000` cells keep the **exact** diameter the brief pins for them.
 //! Their estimate is arithmetic, not a measurement: `5e9 pairs * the measured

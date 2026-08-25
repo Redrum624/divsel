@@ -45,7 +45,7 @@ use rayon::iter::{IntoParallelRefIterator, ParallelIterator};
 
 use crate::error::DivselError;
 use crate::greedy::greedy_independent_set;
-use crate::points::Points;
+use crate::points::{better_pair, Points};
 use crate::utility::Utility;
 
 /// How [`gist`] obtains the diameter `d_max` of the point set (paper line 3).
@@ -86,7 +86,10 @@ pub struct GistConfig {
     pub eps: f32,
     /// Replace the geometric threshold set with the exhaustive one,
     /// `{dist(u,v)/2 : u,v in V}` — the paper's exact-`2/3` variant for a linear
-    /// `g`. Costs `O(n^2)` thresholds; see [`gist`].
+    /// `g`. Costs `O(n^2)` thresholds; see [`gist`]. The set always contains
+    /// `0` (from `u == v`), so the line-2 greedy run is repeated inside the
+    /// sweep and, by the non-strict fold, [`Stage::Greedy`] is never reported
+    /// in this mode.
     pub exhaustive_thresholds: bool,
     /// How `d_max` is obtained.
     pub diameter: DiameterMode,
@@ -131,8 +134,9 @@ pub struct GistResult {
     pub f_value: f64,
     /// `g(S)` alone, so a caller can see how the objective splits.
     pub g_value: f64,
-    /// `div(S)`: the minimum pairwise distance in `S`, or `d_max` when
-    /// `|S| <= 1`.
+    /// `div(S)`: the minimum pairwise distance in `S`, or [`GistResult::d_max`]
+    /// when `|S| <= 1` -- which under [`DiameterMode::Approx`] is the estimate
+    /// `d_hat`, not the exact diameter.
     pub div: f32,
     /// The distance threshold that produced `selected`: `0.0` for
     /// [`Stage::Greedy`], `d_max` for [`Stage::DiameterPair`], and the winning
@@ -215,7 +219,9 @@ fn thresholds_with_bound(d_max: f32, eps: f32, bound: f64) -> Vec<f32> {
 /// instead of `2/3 - eps`.
 fn exhaustive_threshold_set(pts: &Points<'_>) -> Vec<f32> {
     let n = pts.n();
-    let mut out = Vec::with_capacity(n * (n - 1) / 2 + 1);
+    // One entry per `u <= v` pair: the `n * (n - 1) / 2` unordered pairs plus
+    // the `n` diagonal zeros (deduplicated to one below).
+    let mut out = Vec::with_capacity(n * (n + 1) / 2);
     for u in 0..n {
         // `u == v` contributes the paper's `dist(u,u)/2 = 0`, which reproduces
         // the line-2 greedy call inside the sweep.
@@ -291,7 +297,9 @@ pub fn eval_g(util: &mut dyn Utility, s: &[usize], pts: &Points<'_>) -> f64 {
 ///
 /// Starting from index `0`, each sweep takes `a = argmax_j dist(cur, j)` and then
 /// `b = argmax_j dist(a, j)`, keeps `(dist(a,b), min(a,b), max(a,b))` if it beats
-/// the incumbent, and starts the next sweep from `b`. Ties in either `argmax` go
+/// the incumbent, and starts the next sweep from `b`. Each `argmax` runs over
+/// `j != source` -- the source index itself is excluded, so the returned pair is
+/// distinct even when every distance is `0`. Ties in either `argmax` go
 /// to the lowest index, and the incumbent is chosen by the same total order
 /// [`Points::diameter`] uses — larger distance, then smaller `u`, then smaller
 /// `v` — so the result is deterministic and directly comparable to the exact one.
@@ -348,26 +356,6 @@ fn farthest_from(pts: &Points<'_>, from: usize) -> usize {
     best.1
 }
 
-/// The total order [`Points::diameter`] reduces with: larger distance wins, then
-/// the smaller `u`, then the smaller `v`.
-fn better_pair(a: (f32, usize, usize), b: (f32, usize, usize)) -> (f32, usize, usize) {
-    match a.0.total_cmp(&b.0) {
-        Ordering::Greater => a,
-        Ordering::Less => b,
-        Ordering::Equal => match a.1.cmp(&b.1) {
-            Ordering::Less => a,
-            Ordering::Greater => b,
-            Ordering::Equal => {
-                if a.2 <= b.2 {
-                    a
-                } else {
-                    b
-                }
-            }
-        },
-    }
-}
-
 /// Runs GIST over `pts`, maximizing `f(S) = g(S) + lambda * div(S)` subject to
 /// `|S| <= k`.
 ///
@@ -377,7 +365,9 @@ fn better_pair(a: (f32, usize, usize), b: (f32, usize, usize)) -> (f32, usize, u
 /// ascending order of `d`, so the largest threshold attaining the best `f` is the
 /// one reported.
 ///
-/// `util` may be in any state on entry and is returned [`Utility::reset`].
+/// `util` may be in any state on entry. On `Ok` it is returned
+/// [`Utility::reset`]; on an `Err` from the validation below it is left exactly
+/// as it came in, since nothing has touched it yet.
 ///
 /// The elided lifetime on `pts` accepts either flavour of point set: the
 /// `Points<'static>` that [`Points::new`] hands back for an owned buffer, and the
@@ -847,7 +837,9 @@ mod tests {
     /// instances.
     ///
     /// `f(GIST) >= f(greedy-on-f)` is **not** a theorem, per instance or on the
-    /// mean. Measured over these 20 seeds at the default `eps = 0.1`:
+    /// mean. Measured at `ff3b1da` over these 20 seeds at the default `eps = 0.1`
+    /// (every constant quoted in this comment is that commit's number; re-measure
+    /// before relying on one):
     ///
     /// ```text
     ///  k | GIST     | greedy-on-g | greedy-on-f | random
@@ -955,7 +947,8 @@ mod tests {
             );
             assert!(
                 mean_gist >= 0.95 * mean_greedy_f,
-                "k = {k}: mean f(GIST) = {mean_gist} is more than 5% below mean                  f(greedy-on-f) = {mean_greedy_f}"
+                "k = {k}: mean f(GIST) = {mean_gist} is more than 5% below mean \
+                 f(greedy-on-f) = {mean_greedy_f}"
             );
         }
     }
@@ -1597,7 +1590,8 @@ mod tests {
             .expect("a multi-thread pool");
         assert!(
             many.current_num_threads() > 1,
-            "the parallel leg needs more than one worker or this test compares a              sequential run against itself"
+            "the parallel leg needs more than one worker or this test compares a \
+             sequential run against itself"
         );
 
         for instance in 0..20u64 {

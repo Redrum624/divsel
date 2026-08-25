@@ -717,11 +717,13 @@ mod tests {
         }
         assert!(
             differing_dot > 0,
-            "no seed pair separates a fused dot from the reference, so              dot_reduces_in_the_fixed_sixteen_accumulator_order could not see an FMA rewrite"
+            "no seed pair separates a fused dot from the reference, so \
+             dot_reduces_in_the_fixed_sixteen_accumulator_order could not see an FMA rewrite"
         );
         assert!(
             differing_sq_euclid > 0,
-            "no seed pair separates a fused sq_euclid from the reference, so              sq_euclid_reduces_in_the_fixed_sixteen_accumulator_order could not see an FMA rewrite"
+            "no seed pair separates a fused sq_euclid from the reference, so \
+             sq_euclid_reduces_in_the_fixed_sixteen_accumulator_order could not see an FMA rewrite"
         );
     }
 
