@@ -599,6 +599,28 @@ fn gist_never_beats_the_oracle_and_reports_a_reproducible_f() {
     }
 
     assert_eq!(runs, 2 * INSTANCES);
+
+    // Non-vacuity is asserted, not merely printed: on a set of instances GIST
+    // solves exactly every time every ratio above is `1.0`, and the three
+    // theorem groups then prove nothing. Replacing `gist` with a brute-force
+    // optimum drives both counts to `0` and fails here -- the only assertion in
+    // this file that would notice.
+    //
+    // Measured on this tree: 114/500 geometric and 270/500 exhaustive. The
+    // floors sit far below that because the instances are Gaussian and so not
+    // bit-stable across platforms; they guard non-vacuity, they do not pin the
+    // exact counts.
+    assert!(
+        strict_geometric >= 40,
+        "the geometric half has gone vacuous: OPT is strictly above f(GIST) on only \
+         {strict_geometric}/{INSTANCES} runs, so the Theorem 3.1 and 3.3 groups are \
+         asserting a bound no instance approaches"
+    );
+    assert!(
+        strict_exhaustive >= 100,
+        "the exhaustive half has gone vacuous: OPT is strictly above f(GIST) on only \
+         {strict_exhaustive}/{INSTANCES} runs"
+    );
     println!(
         "sanity: {runs} runs over {INSTANCES} instances; OPT strictly above f(GIST) on \
          {strict_geometric}/{INSTANCES} geometric and \
