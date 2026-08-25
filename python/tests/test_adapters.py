@@ -217,7 +217,11 @@ def test_langchain_deterministic():
 def test_langchain_fetch_k_smaller_than_k():
     pytest.importorskip("langchain_core")
     docs = _make_retriever(k=5, fetch_k=3, lam=4.0).invoke(QUERY_TEXT)
-    assert 1 <= len(docs) <= 3
+    # k is clamped to the 3 fetched candidates, and on this fixture all 3 come
+    # back: they are the near-duplicate cluster A, so no threshold can beat the
+    # weight of a third point with a diversity gain of ~5e-5.
+    assert len(docs) == 3
+    assert {d.page_content for d in docs} == {TEXTS[i] for i in RELEVANCE_ORDER[:3]}
 
 
 def test_langchain_fallback_warns_and_returns_topk():
@@ -379,6 +383,54 @@ def test_llamaindex_strict_raises():
         DivselNodePostprocessor(k=4, strict=True).postprocess_nodes(
             ns.make_nodes(with_embeddings=False), query_str=QUERY_TEXT
         )
+
+
+def test_llamaindex_query_embedding_weights_when_scores_are_missing():
+    """Second weight rung: no scores, but the query bundle carries an embedding."""
+    pytest.importorskip("llama_index.core")
+    from divsel.adapters.llamaindex import DivselNodePostprocessor
+
+    ns = _li()
+    nodes = ns.make_nodes(with_scores=False)
+    vectors = np.ascontiguousarray([n.node.embedding for n in nodes], dtype=np.float32)
+    bundle = ns.QueryBundle(query_str=QUERY_TEXT, embedding=QUERY_VEC)
+
+    w = DivselNodePostprocessor._linear_weights(nodes, vectors, bundle)
+    assert w is not None and w.shape == (len(nodes),) and w.dtype == np.float64
+    # 1 + cos(node, query), clipped at 0; the fixture rows are unit vectors and
+    # the query is e1, so cos is simply the first coordinate.
+    expected = 1.0 + vectors.astype(np.float64) @ np.asarray(QUERY_VEC, dtype=np.float64)
+    assert np.allclose(w, expected)
+    assert (w >= 0.0).all()
+
+    # These weights spread wider than SCORES (cluster A ~2.0 against ~1.1-1.3
+    # elsewhere), so leaving A needs the same lam the LangChain suite uses.
+    out = DivselNodePostprocessor(k=4, lam=4.0).postprocess_nodes(nodes, query_bundle=bundle)
+    assert len(out) == 4
+    got = min_pairwise_cos_dist([n.node.embedding for n in out])
+    assert got > topk_diversity(4)
+
+
+def test_llamaindex_uniform_weights_when_no_scores_and_no_query_embedding():
+    """Third weight rung: nothing to weight by, so ``utilities`` is None (uniform)."""
+    pytest.importorskip("llama_index.core")
+    from divsel.adapters.llamaindex import DivselNodePostprocessor
+
+    ns = _li()
+    nodes = ns.make_nodes(with_scores=False)
+    vectors = np.ascontiguousarray([n.node.embedding for n in nodes], dtype=np.float32)
+    assert DivselNodePostprocessor._linear_weights(nodes, vectors, None) is None
+    no_embedding = ns.QueryBundle(query_str=QUERY_TEXT)
+    assert no_embedding.embedding is None
+    assert DivselNodePostprocessor._linear_weights(nodes, vectors, no_embedding) is None
+
+    # End to end through the public API: query_str alone builds a bundle
+    # without an embedding, so this is the uniform rung. g(S) = |S| for every
+    # 4-subset, so f is decided by diversity alone.
+    out = DivselNodePostprocessor(k=4, lam=1.0).postprocess_nodes(nodes, query_str=QUERY_TEXT)
+    assert len(out) == 4
+    got = min_pairwise_cos_dist([n.node.embedding for n in out])
+    assert got > topk_diversity(4)
 
 
 def test_llamaindex_embed_model_diversifies():
