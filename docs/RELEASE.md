@@ -1,6 +1,6 @@
 # Releasing divsel 0.1.0 — the remaining (user-run) steps
 
-Everything buildable was built and verified locally (see "Already verified" below).
+Everything buildable was built and verified locally (see "Verification log" below).
 What remains is exactly the outward-facing actions: pushing, publishing, and the
 one-time PyPI/GitHub configuration. Run these **in order**.
 
@@ -85,7 +85,10 @@ fills for Linux/macOS, and paste the assembled table into `docs/benchmarks/READM
 > *that* tree, not for whatever HEAD is now.** Anything built from source —
 > everything under `wheels/` in particular — is a build artifact, never proof
 > about a later commit: check `git log <sha>..HEAD` before reusing an entry, and
-> re-run steps 1-3 at the commit you are actually tagging. As of the last update
+> re-run the local gates the entries below list — the test suites, clippy, fmt,
+> `cargo doc`, `gen_golden.py --check`, `cargo publish -p divsel --dry-run` and
+> the wheel builds/installs — at the commit you are actually tagging. (Steps 1-7
+> are the outward-facing actions; they are not the verification.) As of the last update
 > to this file the wheels in `wheels/` were built on 2026-08-22 at 14:11-14:18
 > and are **older than** the golden fixture, `docs/CONFORMANCE.md`, the cleanup
 > wave and the final-review fixes, so they do not describe HEAD.
@@ -124,8 +127,13 @@ PyPI/crates.io uploads, and the Trusted Publishing round-trip — that is what s
 - `python -m maturin sdist`: the sdist now carries `test-assets/golden-selection.json`
   and `python/tests/**`, so both readers run from an unpacked source distribution.
 - **Not** re-run at this commit: the per-interpreter wheel installs (3.11-3.14 and
-  3.14t) and the `cargo publish --dry-run`. Those are step 3's job at the release
-  commit.
+  3.14t) and `cargo publish -p divsel --dry-run`. Neither belongs to a numbered
+  step — they are the local gates from the 2026-08-22 entry above, and they have
+  to be re-run at the commit you tag: the dry-run before **step 2** (publish the
+  crate), the wheel builds and installs before **step 4** (tag and push, which is
+  what builds the real wheels). **Step 5** then repeats the install against the
+  published wheel, and **step 3** is the one-time PyPI/GitHub configuration,
+  which verifies nothing.
 
 ## Regenerating release.yml
 

@@ -50,8 +50,10 @@ def parse_rows(spec: str) -> list[int]:
         if not 1 <= idx <= len(ROWS):
             raise SystemExit(f"--rows: row {idx} is out of range; rows are 1..{len(ROWS)}")
         rows.append(idx)
-    if not rows:
-        raise SystemExit(f"--rows: nothing selected; rows are 1..{len(ROWS)}")
+    # No "nothing selected" arm: `"".split(",")` is `[""]`, so an empty spec is
+    # caught by the empty-entry branch above and every other spec contributes at
+    # least one row. The guard that used to sit here could not be reached, and a
+    # branch that cannot run is not a guard.
     return rows
 
 

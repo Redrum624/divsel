@@ -202,9 +202,12 @@ citation matters more than an impressive one.
     `>= 0`; coverage rows `== n`, ids below the universe). divsel's core
     checks `k`, `eps`, `lambda`, then the utility; the Python binding raises
     `ValueError` for all of them, the empty matrix included, and additionally
-    rejects a `bool` `k` with `TypeError` (Python's `True` would otherwise pass
-    as `1`) — a binding-level choice, since the core's `k` is a plain
-    `usize`. (No fixture
+    rejects a `bool` **`k` or `diameter_sweeps`** with `TypeError` (Python's
+    `True` would otherwise pass as `1` — one sweep, or a budget of one) — a
+    binding-level **`[divsel choice]`** for both, since the core's `k` and
+    `sweeps` are plain `usize`. A value of either that does not fit a signed
+    64-bit integer is a `ValueError`, never an `OverflowError`, whatever
+    int-like it arrived as. (No fixture
     exercises an error — every case is a valid input — so a port must reject
     these on its own.)
 14. **Cosine rows are L2-normalised on construction**; a row that cannot be
@@ -291,13 +294,22 @@ tolerance absorbs any reasonable summation order.
   readers on Linux, macOS and Windows — the `golden` job
   (`cargo test -p divsel --test golden`, one cell per OS) and the `python`
   matrix (`pytest python/tests/test_golden.py`, 3 OSes x 4 interpreters).
-* **Regeneration** (`python python/tools/gen_golden.py --check`, gated in CI on
-  one cell — Linux, 3.12) is byte-identical on the generating machine: inputs are dyadic (Gaussian draws
-  are excluded by design), the random cases use a fixed seed, and floats are
-  written with Python `repr` (shortest round-trip). Cross-platform
-  regeneration identity is **not** promised — reproducing the *file* is the
-  generator's job on one machine; reproducing the *values* is every
-  platform's job through the readers.
+* **Regeneration** (`python python/tools/gen_golden.py --check`) is
+  byte-identical: inputs are dyadic (Gaussian draws are excluded by design), the
+  random cases use a fixed seed, and floats are written with Python `repr`
+  (shortest round-trip, and CPython's own implementation, not the platform's).
+  CI gates it on one cell — Linux, 3.12 — while the committed file was generated
+  on Windows, so that gate *is* an assertion of cross-platform byte identity, and
+  it is expected to hold for a mechanical reason: every value on the path from
+  the inputs to the file comes out of `+ - * /`, `min`/`max` and `sqrt`, all of
+  which IEEE-754 makes exactly reproducible; no `libm` transcendental is
+  involved anywhere; the SIMD kernels are bit-identical to the scalar reference
+  by R-G22 (gated on x86_64 and aarch64), and the parallel sweep folds
+  deterministically.
+* That is divsel's own generator, though, and it is **not** part of the contract
+  a port has to meet. A port is judged on the *values* in the file, through the
+  readers, on every platform; reproducing the file's *bytes* is nobody's
+  obligation but this generator's.
 
 ## Robustness margin (why these 22 instances)
 

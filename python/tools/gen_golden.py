@@ -77,12 +77,35 @@ def thresholds_f32(d_max: float, eps: float, bound: float) -> list[float]:
     duplicates removed.  Never log+floor."""
     eps64 = float(np.float32(eps))
     d64 = float(np.float32(d_max))
+    # The core's guard, replicated: gist.rs::thresholds_with_bound returns an
+    # empty grid for anything below f32::EPSILON, where `p *= 1 + eps` can no
+    # longer separate two consecutive f32 entries -- and below 2**-53 does not
+    # advance `p` at all. Without it this loop diverges from the core (and, at a
+    # small enough eps, does not terminate) exactly where the core reports
+    # InvalidEps.
+    if not (eps64 >= float(np.finfo(np.float32).eps) and math.isfinite(eps64)):
+        return []
     out: list[float] = []
     p = 1.0
     while p <= bound:
         out.append(float(np.float32(p * eps64 * d64 / 2.0)))
         p *= 1.0 + eps64
     return [t for i, t in enumerate(out) if i == 0 or t != out[i - 1]]
+
+
+def sweep_ceiling(diameter: str) -> float:
+    """The numerator of the sweep's ceiling `bound = c / eps`, per diameter mode.
+
+    The core widens it from the paper's `2/eps` to `4/eps` under
+    `diameter="approx"` (gist.rs, DiameterMode::Approx), because it then only
+    holds `d_hat >= d_max/2` and the grid still has to reach the true diameter.
+    Predicting a hand case's threshold with `2/eps` under approx would miss
+    every grid entry above about `d_hat`. No approx case carries a `Hand` today,
+    which is exactly why this has to be right before one does.
+    """
+    if diameter not in {"exact", "approx"}:
+        raise ValueError(f"unknown diameter mode {diameter!r}")
+    return 4.0 if diameter == "approx" else 2.0
 
 
 def _normalise(rows: list[list[float]]) -> list[list[float]]:
@@ -954,7 +977,11 @@ def verify_hand(case: dict, out: dict) -> None:
             problems.append(f"threshold {out['threshold']!r} != hand {hand.threshold!r}")
     if hand.interval is not None:
         lo, hi = hand.interval
-        grid = thresholds_f32(hand.d_max, case["eps"], 2.0 / float(np.float32(case["eps"])))
+        grid = thresholds_f32(
+            hand.d_max,
+            case["eps"],
+            sweep_ceiling(case["diameter"]) / float(np.float32(case["eps"])),
+        )
         winners = [t for t in grid if lo < t <= hi]
         if not winners:
             problems.append(f"no grid threshold in ({lo}, {hi}]")

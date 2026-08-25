@@ -19,6 +19,19 @@ OS_ORDER = ["Linux", "Windows", "macOS"]
 def main() -> int:
     cells_dir, out = Path(sys.argv[1]), Path(sys.argv[2])
     records = [json.loads(p.read_text(encoding="utf-8")) for p in sorted(cells_dir.rglob("*.json"))]
+    if not records:
+        # Every `cell` step is `continue-on-error` and this job is `if: always()`,
+        # so "no artifacts at all" used to print a one-column table with four
+        # empty rows and `0 cells`, green. A failed install is a measurement; no
+        # measurement is a broken run, and it says so and exits non-zero.
+        print("## Installability matrix")
+        print("")
+        print(f"**No cells**: no JSON records under `{cells_dir}`.")
+        print("")
+        print("The measurement did not happen -- every `cell` job failed before")
+        print("uploading, or the artifact download matched nothing. There is no")
+        print("table to print and no matrix to write.")
+        return 1
     pythons = sorted({r["python"] for r in records}, key=lambda v: tuple(int(x) for x in v.split(".")))
     oses = [o for o in OS_ORDER if any(r["os"] == o for r in records)]
     oses += sorted({r["os"] for r in records} - set(oses))

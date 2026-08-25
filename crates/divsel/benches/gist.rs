@@ -32,9 +32,13 @@
 //! multiply and the add into an FMA.
 //!
 //! So the ratio below is **dispatched (AVX2, 8 lanes) against an auto-vectorised
-//! SSE2 baseline (4 lanes)**, not against truly scalar code. A 1.8x-4.4x
+//! SSE2 baseline (4 lanes)**, not against truly scalar code. A 1.99x-4.97x
 //! measured speedup over a 4-lane baseline is a different -- and more honest --
 //! claim than the same number over a 1-lane one.
+//!
+//! Those two ends are the measured extremes of the kernel table in
+//! `docs/benchmarks/README.md`: `kernel/dot` at dim 64 (40.423 us dispatched vs
+//! 80.444 us scalar) and at dim 768 (147.09 us vs 731.58 us).
 //!
 //! # Tiers
 //!

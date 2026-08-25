@@ -12,3 +12,13 @@ __pycache__/
 *.egg-info/
 *.pdb
 /.venv-*
+# `.github/scripts/install_cell.sh` is documented as runnable locally
+# (docs/benchmarks/README.md): it creates `venv-<library>/` in the checkout root
+# (no leading dot, so `/.venv-*` above does not cover it -- and the EXIT trap
+# that removes it does not fire on a SIGKILL), writes its per-cell records and
+# pip logs into `install-cells/`, and `assemble_matrix.py` writes the merged
+# matrix. None of that is source; without these a later `git add -A` sweeps in
+# four JSON records, four logs and possibly a few hundred MB of venv.
+/venv-*
+/install-cells/
+/docs/benchmarks/install-matrix.json

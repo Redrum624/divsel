@@ -37,8 +37,15 @@ First release.
   `gist-sampling` and a numpy MMR baseline, plus criterion benches for the native
   kernels; results and the installability matrix in `docs/benchmarks/README.md`.
 - **Golden fixtures** (`test-assets/golden-selection.json`, schema 1): 22 cases —
-  dyadic-rational inputs, hand-checked arithmetic, every tie-breaking rule, both
-  metrics, all three utilities, exhaustive and approx-diameter modes — 17 of
+  dyadic-rational inputs, hand-checked arithmetic, both metrics, all three
+  utilities, exhaustive and approx-diameter modes, and the tie-breaking rules a
+  fixture can reach: greedy's lowest-index `argmax`, the sweep's non-strict fold,
+  the diametrical pair's ascending index order. One is **not** reachable — the
+  strictness of line 5's `f_pair > f_value` comparison, since no case
+  distinguishes `>` from `>=` (`docs/CONFORMANCE.md` rule 3 says so, and
+  `gist.rs`'s own
+  `the_diametrical_pair_does_not_displace_a_greedy_it_only_ties` is what pins it
+  in-repo) — 17 of
   them protected by a brute-force robustness margin (best vs second-best `f` at
   least 1e-4 apart relative), and 5 deliberately exempt because their ties are
   exact dyadic arithmetic and exist to pin the tie-breaking rules (cases 2, 3,

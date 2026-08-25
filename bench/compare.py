@@ -53,6 +53,7 @@ import importlib.metadata as _md
 import json
 import os
 import platform
+import signal
 import subprocess
 import sys
 import time
@@ -471,6 +472,78 @@ def worker(args) -> dict:
 # --------------------------------------------------------------------------------------------------
 
 
+def kill_tree(proc: subprocess.Popen) -> None:
+    """Kill `proc` **and everything it spawned**.
+
+    `subprocess.run(..., timeout=...)` kills and reaps only the direct child. A
+    `gist-sampling` cell runs joblib/loky with `n_jobs=-1`, so a timeout there
+    would leave its worker processes alive holding the multi-GiB working sets
+    this harness reports -- and the next cell's wall clock and peak RSS would be
+    measured against them. On POSIX the worker is started in its own session, so
+    one `killpg` takes the group; on Windows `taskkill /T` walks the tree.
+    """
+    if os.name == "nt":
+        subprocess.run(
+            ["taskkill", "/F", "/T", "/PID", str(proc.pid)],
+            capture_output=True,
+            check=False,
+        )
+    else:
+        try:
+            os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+        except (ProcessLookupError, PermissionError, OSError):
+            pass
+    proc.kill()
+    try:
+        proc.wait(timeout=30)
+    except subprocess.TimeoutExpired:  # pragma: no cover - the OS refused a SIGKILL
+        pass
+
+
+# The two spellings of the same library. At n >= 1M they are the same cell.
+DIVSEL_SPELLINGS = ("divsel", "divsel[diameter=approx]")
+
+
+def resolve_methods(methods, n: int) -> list[tuple[str, str | None, str]]:
+    """`(label, effective, reason)` for every requested method, in request order.
+
+    `effective is None` means no cell is run and `reason` says why. Every label
+    the caller asked for gets exactly one entry, which is the point: `cells_for`
+    forces `diameter="approx"` at `n >= 1M` (R-G21), so plain `divsel` there
+    names a configuration that did not run, and both spellings resolve to the
+    one cell that did. An earlier version dropped the second spelling with
+    `continue` and no record at all, so `--all --large` with the default methods
+    wrote 6 rows where 7 were asked for and nothing said what happened to the
+    seventh.
+
+    Below 1M nothing is rewritten: the two divsel rows are genuinely different
+    measurements there.
+    """
+    if n < 1_000_000:
+        return [(m, m, "") for m in methods]
+    out: list[tuple[str, str | None, str]] = []
+    emitted = False
+    for method in methods:
+        if method not in DIVSEL_SPELLINGS:
+            out.append(
+                (method, None, "n = 1M is run for divsel[diameter=approx] only (R-G21)")
+            )
+            continue
+        if emitted:
+            out.append(
+                (
+                    method,
+                    None,
+                    "n = 1M forces diameter=approx (R-G21): this is the same cell as "
+                    "divsel[diameter=approx], reported once under that label",
+                )
+            )
+            continue
+        emitted = True
+        out.append((method, "divsel[diameter=approx]", ""))
+    return out
+
+
 def run_cell(method: str, n: int, dim: int, k: int, utility: str, args, diameter: str) -> dict:
     cmd = [
         sys.executable,
@@ -496,20 +569,35 @@ def run_cell(method: str, n: int, dim: int, k: int, utility: str, args, diameter
     hard_limit = args.timeout * (args.runs + 1) + 120
     base = {"n": n, "dim": dim, "k": k, "utility": utility, "method": method}
     t0 = time.perf_counter()
+    # Its own session (POSIX) so a timeout can take the whole process group; on
+    # Windows `kill_tree` uses taskkill /T instead. See `kill_tree`.
+    session = {} if os.name == "nt" else {"start_new_session": True}
+    proc = subprocess.Popen(
+        cmd,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        **session,
+    )
     try:
-        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=hard_limit)
+        stdout, stderr = proc.communicate(timeout=hard_limit)
     except subprocess.TimeoutExpired:
-        return {**base, "status": "timeout", "reason": f"worker killed after {hard_limit} s"}
+        kill_tree(proc)
+        return {
+            **base,
+            "status": "timeout",
+            "reason": f"worker and its descendants killed after {hard_limit} s",
+        }
     elapsed = time.perf_counter() - t0
     if proc.returncode != 0:
-        err = [ln for ln in proc.stderr.strip().splitlines() if ln.strip()]
+        err = [ln for ln in stderr.strip().splitlines() if ln.strip()]
         return {
             **base,
             "status": "error",
             "reason": f"worker exit {proc.returncode}: {err[-1] if err else '(no stderr)'}",
             "worker_wall_s": elapsed,
         }
-    lines = [ln for ln in proc.stdout.splitlines() if ln.startswith("{")]
+    lines = [ln for ln in stdout.splitlines() if ln.startswith("{")]
     if not lines:
         return {
             **base,
@@ -666,27 +754,13 @@ def main(argv=None) -> int:
     print(json.dumps({**meta, "argv": argv}, indent=1), file=sys.stderr)
     results = []
     for n, dim, k, utility, diameter in cells_for(args):
-        ran = set()
-        for method in methods:
-            # `cells_for` forces diameter="approx" at n >= 1M (R-G21), so a row
-            # labelled plain `divsel` there would name a configuration that did
-            # not run. Both divsel spellings resolve to the one cell that does,
-            # and it is labelled for what it ran -- which is also what makes
-            # `--methods "divsel[diameter=approx]"` return that cell instead of
-            # "not run". Below 1M nothing is rewritten: the two divsel rows are
-            # genuinely different measurements there.
-            effective = method
-            if n >= 1_000_000:
-                if method not in ("divsel", "divsel[diameter=approx]"):
-                    results.append(
-                        {"n": n, "dim": dim, "k": k, "utility": utility, "method": method, "status": "not run",
-                         "reason": "n = 1M is run for divsel only (R-G21)", "argv": argv}
-                    )
-                    continue
-                effective = "divsel[diameter=approx]"
-                if effective in ran:
-                    continue
-                ran.add(effective)
+        for method, effective, reason in resolve_methods(methods, n):
+            if effective is None:
+                results.append(
+                    {"n": n, "dim": dim, "k": k, "utility": utility, "method": method,
+                     "status": "not run", "reason": reason, "argv": argv}
+                )
+                continue
             print(f"[{_dt.datetime.now():%H:%M:%S}] n={n} dim={dim} k={k} {utility} {effective} ...",
                   file=sys.stderr, flush=True)
             r = run_cell(effective, n, dim, k, utility, args, diameter)
