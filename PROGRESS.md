@@ -2,8 +2,8 @@
 
 Plan: `docs/superpowers/plans/2026-08-21-divsel-v0.1.md` · Execution: Subagent-Driven Development on branch `feat/v0.1`.
 
-CURRENT LOT: 11
-NEXT ACTION: Task 11 implementer running from `.superpowers/sdd/2026-08-21-divsel-v0.1/task-11-brief.md` + `task-11-context.md` (20 golden cases with dyadic inputs + robustness margin, gen_golden.py --check byte-stability, Rust+Python readers, CONFORMANCE.md incl. every [divsel choice] from the rulings ledger, CHANGELOG placeholder replaced, ci.yml golden steps). After lot 11: final whole-branch review, then hand the user docs/RELEASE.md.
+CURRENT LOT: FINAL REVIEW
+NEXT ACTION: All 11 lots done and reviewed. Final whole-branch review running (main..feat/v0.1, 37 commits): two consecutive clean passes required per adversarial-review; the 39 deferred minors in `.superpowers/sdd/2026-08-21-divsel-v0.1/deferred-minors.txt` are its cleanup checklist. After it: hand the user `docs/RELEASE.md` (publish steps are theirs per R-PUB). On resume with no review commits past b5eb01b: re-dispatch the final review.
 
 | Lot | Goal (one line) | Status | Commit SHA | Files touched | Next concrete action |
 |-----|-----------------|--------|-----------|---------------|----------------------|
@@ -18,7 +18,7 @@ NEXT ACTION: Task 11 implementer running from `.superpowers/sdd/2026-08-21-divse
 | 8 | Benchmarks vs incumbents + installability matrix | done | 818ef9c | bench/*, docs/benchmarks/*, .github/workflows/install-matrix.yml, .github/scripts/* | — |
 | 9 | LangChain / LlamaIndex adapters | done | 6fed702 | python/divsel/adapters/*, python/tests/test_adapters.py, README.md | — |
 | 10 | CI, wheels, 0.1.0 release prep (publishes deferred per R-PUB) | done | 4d93311 | .github/workflows/{ci,release}.yml, CHANGELOG.md, docs/RELEASE.md, Cargo.toml, pyproject.toml, README.md | — |
-| 11 | Golden fixtures + CONFORMANCE.md | in-progress | — | test-assets/golden-selection.json, python/tools/gen_golden.py, crates/divsel/tests/golden.rs, python/tests/test_golden.py, docs/CONFORMANCE.md | see NEXT ACTION |
+| 11 | Golden fixtures + CONFORMANCE.md (22 cases) | done | b5eb01b | test-assets/golden-selection.json, .gitattributes, python/tools/gen_golden.py, crates/divsel/tests/golden.rs, python/tests/test_golden.py, docs/CONFORMANCE.md, CHANGELOG.md, ci.yml | — |
 
 ## Blockers known at start (2026-08-21)
 - No crates.io token (`~/.cargo/credentials.toml` absent) and no PyPI token on this machine → `cargo publish` / `maturin publish` steps cannot run unattended; everything up to the publish command is prepared and the exact command is recorded here when reached.
