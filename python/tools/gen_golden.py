@@ -7,7 +7,7 @@ script writes.  See ``docs/CONFORMANCE.md`` for the contract.
 Usage::
 
     python python/tools/gen_golden.py           # (re)write test-assets/golden-selection.json
-    python python/tools/gen_golden.py --check   # regenerate to a temp file, byte-compare
+    python python/tools/gen_golden.py --check   # regenerate in memory, byte-compare with the file
 
 Design rules (R-G14):
 
@@ -151,10 +151,11 @@ def _brute_f(case: dict) -> tuple[dict[frozenset, float], float]:
     k = min(case["k"], n)
     dist = _dist_matrix(vectors, metric)
 
+    d_exact = max((dist[i][j] for i in range(n) for j in range(i + 1, n)), default=0.0)
     if case["diameter"] == "approx":
         d_used = _approx_diameter(dist, n, case["diameter_sweeps"])
     else:
-        d_used = max((dist[i][j] for i in range(n) for j in range(i + 1, n)), default=0.0)
+        d_used = d_exact
 
     utility = case["utility"]
     if utility == "linear":
@@ -173,8 +174,10 @@ def _brute_f(case: dict) -> tuple[dict[frozenset, float], float]:
             return float(len(covered))
 
     elif utility == "facility_location":
-        scale = 1.0 if metric == "cosine" else d_used
-        # d_max == 0 would make sim identically 1; no fixture is degenerate.
+        # The library's FacilityLocation::new always scales by the EXACT
+        # diameter, whatever the diameter mode (CONFORMANCE.md rule 10).
+        scale = 1.0 if metric == "cosine" else d_exact
+        # d_max == 0 would make sim identically 1; no FL fixture is degenerate.
         assert scale > 0.0
 
         def sim(i: int, j: int) -> float:
@@ -347,14 +350,16 @@ def hand_cases() -> list[dict]:
     #   Greedy d=0: weights 4 at 0, 2, 4 -> [0, 2, 4], g = 12,
     #     div = min(1, 2, 1) = 1, f = 13.
     #   Pair [0, 5]: g = 7, div = 4, f = 11 < 13 -> greedy survives line 5.
-    #   Sweep 0.2*1.1^i (0.2 .. 3.839):
-    #     d <= 1: [0, 2, 4] again, f = 13 >= 13 -> sweep.
-    #     d in (1, 1.5]: 0; {2..5} >= d from 0 -> 2 (w4); then 4 (d24 = 1 < d
-    #       fails? no: d24 = 1 -> blocked), 5 ok -> compare 4? blocked; pick
-    #       among {5}: wait d(4, x=2)=1 -- detailed in fixtures.py at 2x scale:
-    #       -> [0, 4, 5], g = 11, div = 2, f = 13 >= 13 -> update.
-    #     d in (1.5, 2]: 0; {4, 5}; 4 then 5 (d45 = 2 >= d) -> [0, 4, 5], f = 13.
-    #     d in (2, 3.839]: 0; only 5 -> [0, 5], f = 11 < 13.
+    #   Sweep 0.2*1.1^i (0.2 .. 3.839); greedy always opens with 0 (w4, the
+    #   lowest index among the three weight-4 points):
+    #     d <= 1: 2 admitted (d02 = 1 >= d) and wins on weight+index; then 4
+    #       (d24 = 1 >= d) -> [0, 2, 4] again, f = 13 >= 13 -> sweep.
+    #     d in (1, 2]: 2 blocked (d02 = 1 < d); 4 (d04 = 2 >= d) beats every
+    #       other admitted point on weight; then only 5 clears d from both 0
+    #       and 4 (d45 = 2 >= d) -> [0, 4, 5], g = 11, div = 2, f = 13 >= 13
+    #       -> update.
+    #     d in (2, 3.839]: only 5 clears d from 0 -> [0, 5], g = 7, div = 4,
+    #       f = 11 < 13.
     #   Winner: largest thr <= 2 -> [0, 4, 5], f = 13, g = 11, div = 2.
     #   (This is Task 7's CASE_B at half scale with lam doubled: identical f.)
     cases.append(
@@ -540,8 +545,8 @@ def hand_cases() -> list[dict]:
     #   x = [0, 0, 4], w = 1, lam = 1, k = 2.  Rows 0 and 1 are identical, so
     #   f({0,2}) = f({1,2}) = 7 EXACTLY (dyadic); the argmax tie rule must
     #   pick index 0.  d_max = 4 realized by (0,2) and (1,2): pair tie -> (0,2).
-    #   Greedy d=0: [0, 1], f = 2 + 0 = 2.  Pair [0, 2]: f = 2 + 4 = 6 -- wait:
-    #   g = 2, div = 4, f = 6 > 2 -> displaced.  Every sweep threshold blocks
+    #   Greedy d=0: [0, 1], g = 2, div = 0, f = 2.  Pair [0, 2]: g = 2,
+    #   div = 4, f = 6 > 2 -> displaced.  Every sweep threshold blocks
     #   row 1 (dist 0) and admits row 2 -> [0, 2], f = 6 >= 6 -> stage sweep,
     #   last threshold reported.  Exempt from the margin rule: the [1, 2] tie
     #   is exact by construction.
@@ -666,6 +671,78 @@ def coverage_cases() -> list[dict]:
             lam=0.5,
             hand=Hand([0, 2], 4.5, 3.0, 3.0, "sweep", 3.0, interval=(0.0, 3.0)),
             exempt="f({0,1}) == f({0,2}) == pair f is an exact dyadic tie by construction",
+        )
+    )
+
+    return cases
+
+
+def degenerate_and_tie_cases() -> list[dict]:
+    """Cases 21-22 (review fix round 1): the d_max == 0 pair check and the
+    exact-diameter tie order, each pinned by a fixture of its own."""
+    cases: list[dict] = []
+
+    # -- 21. coincident_coverage_pair_check -- d_max == 0 still runs line 5 --
+    #
+    #   Three coincident points x = [0, 0, 0]; sets s0={0,1,2}, s1={3,4,5},
+    #   s2={0,1,3,4}; universe = 6; k = 2, lam = 1.
+    #   Every distance is 0, so d_max = 0 and the exact-diameter reduction
+    #   returns the lexicographically smallest pair (0, 1).
+    #   Greedy d=0: marginals 3, 3, 4 -> 2; then newly covered given s2:
+    #     s0 -> {2} = 1, s1 -> {5} = 1, tie -> 0.  S = [2, 0], g = 5, div = 0,
+    #     f = 5.
+    #   Pair [0, 1]: g = |{0..5}| = 6, div = 0, f = 6 > 5 (strict line 5)
+    #     -> displaced: stage diameter_pair, threshold = d_max = 0.
+    #   Sweep: skipped (d_max == 0), so nothing can relabel the stage.
+    #   Result: [0, 1], f = 6, g = 6, div = 0, stage diameter_pair, thr 0,
+    #   d_max 0.  (Under a linear utility the same points would report stage
+    #   greedy: greedy already holds the top-k weights, so a modular g can
+    #   never let the pair win strictly.)
+    cases.append(
+        _case(
+            "coincident_coverage_pair_check",
+            "three coincident points (d_max == 0): the sweep is skipped but "
+            "line 5 still runs, and the pair strictly beats greedy on g",
+            utility="coverage",
+            vectors=[[0.0], [0.0], [0.0]],
+            utilities=[[0, 1, 2], [3, 4, 5], [0, 1, 3, 4]],
+            k=2,
+            lam=1.0,
+            hand=Hand([0, 1], 6.0, 6.0, 0.0, "diameter_pair", 0.0, threshold=0.0),
+        )
+    )
+
+    # -- 22. diameter_tie_smallest_pair -- R-G15 in the pair stage ------------
+    #
+    #   x = [-4, -4, 0, 4], w = [1, 1, 1.5, 1], lam = 1, k = 2, eps = 0.1.
+    #   d01 = 0, d02 = 4, d03 = 8, d12 = 4, d13 = 8, d23 = 4; d_max = 8,
+    #   realized by (0, 3) AND (1, 3): the total order (larger d, smaller u,
+    #   smaller v) picks (0, 3).
+    #   Greedy d=0: 2 (w 1.5); tie {0, 1, 3} at w = 1 -> 0 -> [2, 0],
+    #     g = 2.5, div = 4, f = 6.5.
+    #   Pair [0, 3]: g = 2, div = 8, f = 10 > 6.5 -> displaced.
+    #   Sweep 0.4*1.1^i (0.4 .. 7.678): greedy always opens with 2 (max
+    #   weight); every other point is exactly 4 from it:
+    #     d <= 4: all three admitted (4 >= d), tie -> 0 -> [2, 0], f = 6.5.
+    #     d in (4, 7.678]: nothing admitted -> [2] alone, g = 1.5,
+    #       div = d_max = 8, f = 9.5 < 10.
+    #   The pair keeps the slot: [0, 3], f = 10, stage diameter_pair, thr 8.
+    #   Under the opposite tie order the pair would be (1, 3) and the reported
+    #   selection [1, 3] with the same f -- a tie-direction case, exempt from
+    #   the margin rule: f({0,3}) == f({1,3}) == 10 exactly by construction.
+    cases.append(
+        _case(
+            "diameter_tie_smallest_pair",
+            "d_max realised by (0,3) and (1,3): the exact-diameter tie resolves "
+            "to the lexicographically smallest pair and the sweep never "
+            "re-finds it, so the reported selection is the pair itself",
+            vectors=[[-4.0], [-4.0], [0.0], [4.0]],
+            utilities=[1.0, 1.0, 1.5, 1.0],
+            k=2,
+            lam=1.0,
+            hand=Hand([0, 3], 10.0, 2.0, 8.0, "diameter_pair", 8.0, threshold=8.0),
+            exempt="f({0,3}) == f({1,3}) == 10 is an exact dyadic tie by "
+            "construction — the diameter tie order (smallest pair) IS the case",
         )
     )
 
@@ -904,6 +981,7 @@ def build() -> dict:
     specs.extend(coverage_cases())  # cases 17-18
     specs.append(structured[1])  # case 19
     specs.append(structured[2])  # case 20
+    specs.extend(degenerate_and_tie_cases())  # cases 21-22
 
     cases_json = []
     for case in specs:
@@ -946,7 +1024,7 @@ def build() -> dict:
             }
         )
 
-    assert len(cases_json) == 20, f"expected 20 cases, built {len(cases_json)}"
+    assert len(cases_json) == 22, f"expected 22 cases, built {len(cases_json)}"
     return {
         "generator": f"divsel {__version__}",
         "paper": "arXiv:2405.18754v3",

@@ -36,7 +36,7 @@ First release.
 - **Benchmarks**: reproducible comparison (`bench/compare.py`) against `gist-select`,
   `gist-sampling` and a numpy MMR baseline, plus criterion benches for the native
   kernels; results and the installability matrix in `docs/benchmarks/README.md`.
-- **Golden fixtures** (`test-assets/golden-selection.json`, schema 1): 20 cases —
+- **Golden fixtures** (`test-assets/golden-selection.json`, schema 1): 22 cases —
   dyadic-rational inputs, hand-checked arithmetic, every tie-breaking rule, both
   metrics, all three utilities, exhaustive and approx-diameter modes — each
   protected by a brute-force robustness margin. The cross-implementation

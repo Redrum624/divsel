@@ -42,7 +42,7 @@ def test_golden_header() -> None:
     assert GOLDEN["generator"].startswith("divsel ")
     assert GOLDEN["paper"] == "arXiv:2405.18754v3"
     assert GOLDEN["tolerance"]["selected"] == "exact"
-    assert len(GOLDEN["cases"]) == 20
+    assert len(GOLDEN["cases"]) == 22
 
 
 @pytest.mark.parametrize("case", GOLDEN["cases"], ids=[c["name"] for c in GOLDEN["cases"]])

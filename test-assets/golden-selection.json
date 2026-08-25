@@ -1025,6 +1025,99 @@
    "expected_threshold": 7.681485652923584,
    "expected_stage": "sweep",
    "expected_d_max": 8.003905296325684
+  },
+  {
+   "name": "coincident_coverage_pair_check",
+   "note": "three coincident points (d_max == 0): the sweep is skipped but line 5 still runs, and the pair strictly beats greedy on g [margin: 1.667e-01 rel]",
+   "metric": "euclidean",
+   "utility": "coverage",
+   "vectors": [
+    [
+     0.0
+    ],
+    [
+     0.0
+    ],
+    [
+     0.0
+    ]
+   ],
+   "utilities": [
+    [
+     0,
+     1,
+     2
+    ],
+    [
+     3,
+     4,
+     5
+    ],
+    [
+     0,
+     1,
+     3,
+     4
+    ]
+   ],
+   "k": 2,
+   "lam": 1.0,
+   "eps": 0.1,
+   "exhaustive_thresholds": false,
+   "diameter": "exact",
+   "diameter_sweeps": 3,
+   "expected_selected": [
+    0,
+    1
+   ],
+   "expected_f": 6.0,
+   "expected_g": 6.0,
+   "expected_div": 0.0,
+   "expected_threshold": 0.0,
+   "expected_stage": "diameter_pair",
+   "expected_d_max": 0.0
+  },
+  {
+   "name": "diameter_tie_smallest_pair",
+   "note": "d_max realised by (0,3) and (1,3): the exact-diameter tie resolves to the lexicographically smallest pair and the sweep never re-finds it, so the reported selection is the pair itself [margin: exempt \u2014 f({0,3}) == f({1,3}) == 10 is an exact dyadic tie by construction \u2014 the diameter tie order (smallest pair) IS the case]",
+   "metric": "euclidean",
+   "utility": "linear",
+   "vectors": [
+    [
+     -4.0
+    ],
+    [
+     -4.0
+    ],
+    [
+     0.0
+    ],
+    [
+     4.0
+    ]
+   ],
+   "utilities": [
+    1.0,
+    1.0,
+    1.5,
+    1.0
+   ],
+   "k": 2,
+   "lam": 1.0,
+   "eps": 0.1,
+   "exhaustive_thresholds": false,
+   "diameter": "exact",
+   "diameter_sweeps": 3,
+   "expected_selected": [
+    0,
+    3
+   ],
+   "expected_f": 10.0,
+   "expected_g": 2.0,
+   "expected_div": 8.0,
+   "expected_threshold": 8.0,
+   "expected_stage": "diameter_pair",
+   "expected_d_max": 8.0
   }
  ]
 }
