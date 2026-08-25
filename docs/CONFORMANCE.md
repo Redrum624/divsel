@@ -109,7 +109,15 @@ citation matters more than an impressive one.
    of `{dist(u,v)/2}` — so with `d_max > 0` the `d = 0` sweep run duplicates
    line 2 and rule 2 relabels it: **`stage == "greedy"` is unreachable under
    `exhaustive_thresholds`**. The exhaustive set is sorted ascending and
-   exactly deduplicated; its ceiling is `d_max/2`. (Case 19.)
+   exactly deduplicated; its ceiling is `d_max/2`. (Case 19 pins only that
+   the exhaustive set is used at all: its winning threshold `1.5 =
+   dist(6, 9)/2` is not an entry of the geometric grid for `d_max = 8`,
+   `eps = 0.1` — the nearest grid entries are `1.3809` and `1.5190` — so a
+   port sweeping the grid instead reports `1.3809` and fails the `threshold`
+   field. The `0` entry — and with it the unreachability of `"greedy"` — and
+   the `dist/2` halving are **not pinned**: dropping `0` from the set, or
+   not halving it (ceiling `d_max` instead of `d_max/2`), leaves all 22
+   cases passing; case 19 still reports `[9, 0, 8]` at `1.5` either way.)
 7. **Geometric thresholds by repeated multiplication — never `log` + floor.**
    `D = {(1+eps)^i * eps*d_max/2 : (1+eps)^i <= 2/eps}`, built by iterating
    `p *= 1 + eps` in f64 with `eps` and `d_max` widened from f32, each entry
@@ -118,7 +126,7 @@ citation matters more than an impressive one.
    `diameter == "approx"` the bound `2/eps` widens to **`4/eps`** (the sweep
    must still cover the true `d_max <= 2*d_hat`) and `d_max` in the formula
    is `d_hat`. (The count is pinned by every case whose reported threshold is
-   the grid's top entry — 1, 4, 5, 7, 9, 10, 18: at `eps = 0.1` that is
+   the grid's top entry — 1, 3, 4, 5, 7, 9, 10, 18: at `eps = 0.1` that is
    `i = 31`, `1.1^31 = 19.19 <= 20 < 1.1^32`. The `4/eps` widening is **not
    pinned**: case 20's winning threshold is entry 31, the last one inside the
    `2/eps` grid, so a port keeping `2/eps` under approx passes all 22 cases.)
@@ -228,7 +236,7 @@ tolerance absorbs any reasonable summation order.
 |---|---|---|---|
 | 1 | `line_pick_widest_scaled` | sweep | rule 2 (top threshold re-finds the pair, `>=` relabels); rule 7 count |
 | 2 | `weighted_line_middle_threshold` | sweep | rule 2 (exact `f` tie across thresholds → the later one wins) |
-| 3 | `rectangle_short_return` | sweep | rule 12 (result shorter than `k`) — *not* the diameter tie order |
+| 3 | `rectangle_short_return` | sweep | rule 12 (result shorter than `k`); rule 7 count — *not* the diameter tie order |
 | 4 | `pair_reached_by_sweep_tie` | sweep | rule 2 (the pair's win relabelled by the sweep); rule 7 count |
 | 5 | `near_duplicate_cluster_high_lambda` | sweep | sweep behaviour on a near-duplicate cluster (regression guard); rule 7 count |
 | 6 | `near_duplicate_cluster_lambda_zero` | greedy | `lambda == 0`; rule 3 (`threshold == 0` for `"greedy"`) |
@@ -244,7 +252,7 @@ tolerance absorbs any reasonable summation order.
 | 16 | `facility_location_euclidean_n12` | sweep | rule 8 (`scale = d_max`) |
 | 17 | `coverage_hand_counts` | sweep | rule 17 |
 | 18 | `coverage_exact_tie_lowest_index` | sweep | rules 1, 2, 17; rule 7 count |
-| 19 | `exhaustive_thresholds_linear_n10` | sweep | rule 6; rule 15 |
+| 19 | `exhaustive_thresholds_linear_n10` | sweep | rule 6 (the exhaustive set is used — `threshold == 1.5` is not a grid entry; *not* the `0` entry or the `d_max/2` ceiling); rule 15 |
 | 20 | `approx_diameter_double_sweep` | sweep | rule 9 (`d_hat`); rule 10 (reported `d_max`, grid from `d_hat`) — optional |
 | 21 | `coincident_coverage_pair_check` | diameter_pair | rule 5 (line 5 still runs at `d_max == 0`); rule 3 (`threshold == 0`); rule 9 (tie order → `(0, 1)`); rule 17 |
 | 22 | `diameter_tie_smallest_pair` | diameter_pair | rule 9 (exact tie order, R-G15); rule 3 |
