@@ -3,7 +3,7 @@
 Plan: `docs/superpowers/plans/2026-08-21-divsel-v0.1.md` · Execution: Subagent-Driven Development on branch `feat/v0.1`.
 
 CURRENT LOT: FINAL REVIEW
-NEXT ACTION: All 11 lots done and reviewed. Final whole-branch review running (main..feat/v0.1, 37 commits): two consecutive clean passes required per adversarial-review; the 39 deferred minors in `.superpowers/sdd/2026-08-21-divsel-v0.1/deferred-minors.txt` are its cleanup checklist. After it: hand the user `docs/RELEASE.md` (publish steps are theirs per R-PUB). On resume with no review commits past b5eb01b: re-dispatch the final review.
+NEXT ACTION: Final review — cleanup wave DONE (65fc69a, all green). The adversarial review rounds have NOT run (all 12 reviewers died on a session limit). Resume: re-dispatch the review-only loop from 65fc69a (3 dimensions x rounds, fresh implementer per round, exit on 2 consecutive clean, cap 4); the checklist and dimension scopes are in the workflow script `divsel-final-review-*.js`. After it converges: hand the user `docs/RELEASE.md`.
 
 | Lot | Goal (one line) | Status | Commit SHA | Files touched | Next concrete action |
 |-----|-----------------|--------|-----------|---------------|----------------------|
