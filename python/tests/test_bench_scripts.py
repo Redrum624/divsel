@@ -275,3 +275,40 @@ def test_kill_tree_takes_the_workers_descendants_too(tmp_path):
     assert _pipe_closes_within(proc, 60), (
         "a descendant of the worker survived kill_tree"
     )
+
+
+def test_run_cell_drives_a_real_worker_end_to_end():
+    """``run_cell`` + ``worker`` on the smallest cell that means anything.
+
+    Neither had a test: the driver spawns ``compare.py --worker`` and parses the
+    JSON line it prints, and a renamed key or a mis-built command line would only
+    show up in a benchmark run. 60 points in 4 dimensions is milliseconds.
+    """
+    compare = _load("compare")
+    args = SimpleNamespace(runs=1, timeout=60)
+    r = compare.run_cell("divsel", 60, 4, 3, "linear", args, "exact")
+
+    assert r["status"] == "ok", r.get("reason")
+    assert (r["n"], r["dim"], r["k"], r["utility"], r["method"]) == (60, 4, 3, "linear", "divsel")
+    assert len(r["selected"]) == 3 == r["eval_size"]
+    assert len(set(r["selected"])) == 3
+    assert r["worker_wall_s"] > 0.0
+    assert len(r["wall_runs_s"]) == args.runs
+    # The driver's own evaluator and the library must agree on f(S).
+    assert r["self_check_abs_diff"] < 1e-5
+    assert r["library_reported"]["diameter"] == "exact"
+
+
+def test_readme_table_main_validates_rows_before_importing_gist_select(monkeypatch):
+    """``--rows`` is parsed before the third-party import, and must stay that way.
+
+    A typo should not require ``gist-select`` to be installed before the caller
+    is told about it -- which is also what makes this arm of ``main`` testable
+    anywhere.
+    """
+    table = _load("gist_select_readme_table")
+    monkeypatch.setattr(sys, "argv", ["gist_select_readme_table.py", "--rows", "9"])
+    with pytest.raises(SystemExit) as info:
+        table.main()
+    assert "--rows" in str(info.value)
+    assert "out of range" in str(info.value)
