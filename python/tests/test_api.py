@@ -143,6 +143,55 @@ def test_bool_k_raises_typeerror(k):
         gist_select_full(x, k=k)
 
 
+@pytest.mark.parametrize("k", [2**63, 2**200, -(2**64)], ids=["i64_max_plus", "huge", "very_negative"])
+def test_k_outside_the_i64_range_raises_valueerror_not_overflowerror(k):
+    # OverflowError is not in the documented Raises block, and a budget out of
+    # range is a ValueError like every other bad argument.
+    x = _random_vectors(4, 2)
+    for fn in (gist_select, gist_select_full):
+        with pytest.raises(ValueError) as info:
+            fn(x, k=k)
+        assert not isinstance(info.value, OverflowError)
+
+
+@pytest.mark.parametrize("sweeps", [True, False], ids=["true", "false"])
+def test_bool_diameter_sweeps_raises_typeerror(sweeps):
+    # Same rule as `k`: bool is an int subclass, and True must not mean 1 sweep.
+    x = _random_vectors(4, 2)
+    with pytest.raises(TypeError, match="diameter_sweeps must be an int, not bool"):
+        gist_select(x, k=2, diameter="approx", diameter_sweeps=sweeps)
+    with pytest.raises(TypeError, match="diameter_sweeps must be an int, not bool"):
+        gist_select_full(x, k=2, diameter="approx", diameter_sweeps=sweeps)
+
+
+def test_diameter_sweeps_outside_the_i64_range_raises_valueerror():
+    x = _random_vectors(4, 2)
+    with pytest.raises(ValueError, match="diameter_sweeps") as info:
+        gist_select(x, k=2, diameter="approx", diameter_sweeps=2**200)
+    assert not isinstance(info.value, OverflowError)
+
+
+def test_diameter_sweeps_defaults_to_three_when_omitted():
+    # The pyo3 default is None (the argument is taken as an object so a bool can
+    # be rejected); omitting it must still mean the documented 3 sweeps.
+    x = _random_vectors(12, 3)
+    omitted = gist_select_full(x, k=3, metric="euclidean", diameter="approx")
+    explicit = gist_select_full(
+        x, k=3, metric="euclidean", diameter="approx", diameter_sweeps=3
+    )
+    assert omitted == explicit
+    assert "diameter_sweeps=3" in (gist_select.__doc__ or "") + str(
+        getattr(gist_select, "__text_signature__", "")
+    )
+
+
+def test_zero_diameter_sweeps_is_treated_as_one():
+    x = _random_vectors(12, 3)
+    zero = gist_select_full(x, k=3, metric="euclidean", diameter="approx", diameter_sweeps=0)
+    one = gist_select_full(x, k=3, metric="euclidean", diameter="approx", diameter_sweeps=1)
+    assert zero == one
+
+
 def test_negative_diameter_sweeps_raises_valueerror():
     x = _random_vectors(4, 2)
     with pytest.raises(ValueError, match="diameter_sweeps must be non-negative"):
@@ -185,7 +234,7 @@ def test_coverage_with_wrong_number_of_sets_raises_valueerror():
 
 def test_invalid_eps_and_lambda_raise_valueerror():
     x = _random_vectors(4, 2)
-    with pytest.raises(ValueError, match=r"epsilon 0 must be in the range 0 < eps <= 1"):
+    with pytest.raises(ValueError, match=r"epsilon 0e0 must be in the range"):
         gist_select(x, k=2, eps=0.0)
     with pytest.raises(ValueError, match="epsilon"):
         gist_select(x, k=2, eps=1.0000001)
@@ -194,9 +243,38 @@ def test_invalid_eps_and_lambda_raise_valueerror():
 
 
 def test_eps_of_exactly_one_is_accepted():
-    # The range is 0 < eps <= 1, closed at the top; the message says so.
+    # The range is closed at the top; the message says so.
     x = _random_vectors(6, 3)
     assert 0 < len(gist_select(x, k=2, eps=1.0)) <= 2
+
+
+@pytest.mark.parametrize(
+    "eps",
+    [1e-30, 1e-16, 1e-8, float(np.finfo(np.float32).eps) / 2],
+    ids=["1e-30", "1e-16", "1e-8", "half_f32_eps"],
+)
+def test_eps_below_the_float32_epsilon_raises_instead_of_killing_the_process(eps):
+    """An eps too small for the f32 grid is rejected, not attempted.
+
+    The grid is built by repeated ``p *= 1 + eps`` in f64 and cast to f32: below
+    ``f32::EPSILON`` two consecutive entries cannot differ, and below ``2**-53``
+    the multiplication does not advance at all -- an unbounded push into a Vec
+    that used to end with ``memory allocation of 137438953472 bytes failed`` and
+    a dead interpreter (exit 127), with no Python exception to catch.
+    """
+    x = _random_vectors(4, 2)
+    with pytest.raises(ValueError, match="epsilon"):
+        gist_select(x, k=2, eps=eps)
+    with pytest.raises(ValueError, match="epsilon"):
+        gist_select_full(x, k=2, eps=eps)
+
+
+def test_eps_of_exactly_the_float32_epsilon_is_accepted():
+    # The bottom of the range is inclusive. One point means d_max == 0, so the
+    # sweep is skipped and this does not build the ~1.4e8 thresholds that eps
+    # would otherwise ask for.
+    x = _random_vectors(1, 2)
+    assert gist_select(x, k=1, eps=float(np.finfo(np.float32).eps)) == [0]
 
 
 def test_empty_and_zero_dim_inputs_raise_valueerror():

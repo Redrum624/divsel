@@ -15,7 +15,7 @@ Verified against the installed ``llama-index-core`` 0.14.24 source
 from __future__ import annotations
 
 import warnings
-from typing import List, Optional
+from typing import List, Literal, Optional
 
 import numpy as np
 
@@ -26,6 +26,7 @@ try:
     from llama_index.core.base.embeddings.base import BaseEmbedding
     from llama_index.core.postprocessor.types import BaseNodePostprocessor
     from llama_index.core.schema import NodeWithScore, QueryBundle
+    from pydantic import Field
 except ImportError as exc:  # pragma: no cover - exercised in framework-free venvs
     raise ImportError(
         "divsel.adapters.llamaindex requires llama-index-core. "
@@ -58,15 +59,18 @@ class DivselNodePostprocessor(BaseNodePostprocessor):
     missing) — not diversified. Set ``strict=True`` for a ``ValueError``.
     """
 
-    k: int = 5
-    """Number of nodes to return (``|S| <= k``)."""
-    lam: float = 1.0
-    """Weight of the min-pairwise-distance diversity term."""
-    eps: float = 0.1
+    # Constraints live on the fields, so an unusable configuration fails at
+    # construction rather than at the first query. The runtime `utility` branch
+    # below stays as a guard: pydantic does not revalidate assignment by default.
+    k: int = Field(default=5, gt=0)
+    """Number of nodes to return (``|S| <= k``); must be ``> 0``."""
+    lam: float = Field(default=1.0, ge=0.0)
+    """Weight of the min-pairwise-distance diversity term; must be ``>= 0``."""
+    eps: float = Field(default=0.1, gt=0.0, le=1.0)
     """GIST threshold-sweep accuracy, in ``(0, 1]``."""
-    metric: str = "cosine"
+    metric: Literal["cosine", "euclidean"] = "cosine"
     """``"cosine"`` or ``"euclidean"``."""
-    utility: str = "linear"
+    utility: Literal["linear", "facility_location"] = "linear"
     """``"linear"`` (score/cosine weights) or ``"facility_location"``."""
     strict: bool = False
     """Raise ``ValueError`` instead of falling back to plain top-k."""

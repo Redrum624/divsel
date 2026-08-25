@@ -24,12 +24,40 @@ import pytest
 
 from divsel import gist_select_full
 
-GOLDEN_PATH = Path(__file__).resolve().parents[2] / "test-assets" / "golden-selection.json"
+_ROOT = Path(__file__).resolve().parents[2]
+GOLDEN_PATH = _ROOT / "test-assets" / "golden-selection.json"
+# The fixture's generator is the marker for "the checkout that owns the fixture".
+# Where it is present, a missing fixture is a hard error, never a skip.
+_GENERATOR = _ROOT / "python" / "tools" / "gen_golden.py"
 
-with open(GOLDEN_PATH, encoding="utf-8") as _fh:
-    GOLDEN = json.load(_fh)
 
-F_REL = GOLDEN["tolerance"]["f_rel"]
+def _load_golden() -> dict | None:
+    """The fixture, or ``None`` when it is genuinely not there to be read.
+
+    Loading at import time is what makes the 22 cases separate parametrised
+    tests, but it also means a missing file is a *collection* error that takes
+    down every test in this module, ``test_golden_header`` included. Only an
+    installed copy of this suite can hit that -- the fixture lives at the
+    repository root -- so it becomes a skip there and stays fatal here.
+    """
+    try:
+        with open(GOLDEN_PATH, encoding="utf-8") as fh:
+            return json.load(fh)
+    except FileNotFoundError:
+        if _GENERATOR.exists():
+            raise
+        return None
+
+
+GOLDEN = _load_golden()
+CASES = GOLDEN["cases"] if GOLDEN is not None else []
+F_REL = GOLDEN["tolerance"]["f_rel"] if GOLDEN is not None else 0.0
+
+pytestmark = pytest.mark.skipif(
+    GOLDEN is None,
+    reason=f"{GOLDEN_PATH} is not present: the golden fixture ships with the "
+    "repository (and the sdist), not with the wheel",
+)
 
 
 def _close(actual: float, expected: float) -> bool:
@@ -38,6 +66,7 @@ def _close(actual: float, expected: float) -> bool:
 
 
 def test_golden_header() -> None:
+    assert GOLDEN is not None
     assert GOLDEN["schema"] == 1
     assert GOLDEN["generator"].startswith("divsel ")
     assert GOLDEN["paper"] == "arXiv:2405.18754v3"
@@ -45,7 +74,7 @@ def test_golden_header() -> None:
     assert len(GOLDEN["cases"]) == 22
 
 
-@pytest.mark.parametrize("case", GOLDEN["cases"], ids=[c["name"] for c in GOLDEN["cases"]])
+@pytest.mark.parametrize("case", CASES, ids=[c["name"] for c in CASES])
 def test_golden_case(case: dict) -> None:
     vectors = np.ascontiguousarray(np.array(case["vectors"], dtype=np.float32))
     utilities = case["utilities"]

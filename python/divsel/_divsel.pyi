@@ -78,19 +78,32 @@ def gist_select(
             ``float64`` array of shape ``(n,)`` of finite, non-negative weights,
             or ``None`` for uniform weights (``g(S) = |S|``). For ``"coverage"``,
             a sequence of ``n`` sequences of non-negative int item ids; the
-            universe is inferred as the largest id plus one, and a bitmap of that
-            size is allocated, so ids must be dense (a huge sparse id allocates a
-            bitmap of that size; ids above ``2**32 - 1``, or a universe that does
-            not fit the platform's ``usize``, raise ``ValueError``). For
+            universe is inferred as the largest id plus one and a coverage flag
+            is allocated per item id -- one **byte**, not one bit, and the
+            parallel sweep clones that array once per worker job, measured at
+            about 17.5 bytes per item id of peak working set. Ids must therefore
+            be dense: one stray sparse id sets the footprint for the whole call
+            (``2**24`` costs roughly 280 MB, ``2**31`` roughly 36 GB, which will
+            abort the process). Ids above ``2**32 - 1``, or a universe that does
+            not fit the platform's ``usize``, raise ``ValueError``. For
             ``"facility_location"``, must be ``None``.
         k: The budget; ``|S| <= k``. Must be an ``int`` greater than zero:
-            ``k <= 0`` raises ``ValueError`` and a ``bool`` raises ``TypeError``
-            (``True`` is not read as ``1``). ``k > n`` is clamped to ``n``. The
-            result can be shorter than ``k`` when no remaining point is at least
-            the winning threshold away from every selected one.
+            ``k <= 0`` raises ``ValueError``, a ``bool`` raises ``TypeError``
+            (``True`` is not read as ``1``), and a ``k`` too large for a signed
+            64-bit integer raises ``ValueError`` (never ``OverflowError``).
+            ``k > n`` is clamped to ``n``. The result can be shorter than ``k``
+            when no remaining point is at least the winning threshold away from
+            every selected one.
         lam: The weight of the diversity term, finite and ``>= 0``.
-        eps: The sweep accuracy in ``(0, 1]``; the threshold set has
-            ``1 + floor(log(2/eps) / log(1+eps))`` entries (32 at the default).
+        eps: The sweep accuracy, from ``np.finfo(np.float32).eps``
+            (``1.1920929e-07``) up to ``1.0`` inclusive; anything outside that
+            range raises ``ValueError``. The threshold set has
+            ``1 + floor(log(2/eps) / log(1+eps))`` entries (32 at the default),
+            or ``1 + floor(log(4/eps) / log(1+eps))`` under ``diameter="approx"``
+            (39 at the default), so the cost grows like ``1/eps``: ``1e-4``
+            already means about 200 000 greedy runs. The lower end of the range
+            is where the ``float32`` grid stops being able to separate two
+            consecutive entries -- below it the set is unbounded, not precise.
         metric: ``"cosine"`` (rows are L2-normalised into a copy, distance is
             ``1 - a.b``) or ``"euclidean"`` (zero-copy).
         utility: ``"linear"``, ``"coverage"`` or ``"facility_location"``.
@@ -102,10 +115,12 @@ def gist_select(
             ``"approx"`` for a farthest-point double sweep whose estimate lies in
             ``[d_max/2, d_max]``.
         diameter_sweeps: Number of double sweeps under ``diameter="approx"``.
-            Must be ``>= 0`` (a negative value raises ``ValueError``); ``0`` is
-            treated as ``1``; ignored under ``"exact"``. No upper bound is
-            enforced: each sweep costs ``O(n * d)``, so a very large value simply
-            runs that long.
+            Must be an ``int`` ``>= 0`` (a negative value raises ``ValueError``,
+            and so does one too large for a signed 64-bit integer; a ``bool``
+            raises ``TypeError``, exactly as for ``k``); ``0`` is treated as
+            ``1``; ignored under ``"exact"``. No upper bound is enforced: each
+            sweep costs ``O(n * d)``, so a very large value simply runs that
+            long.
 
     Returns:
         The selected row indices, in selection order, at most ``k`` of them.
@@ -113,15 +128,27 @@ def gist_select(
     Raises:
         TypeError: ``vectors`` or a linear ``utilities`` is not the required
             C-contiguous array, a coverage ``utilities`` is not a sequence of
-            int sequences, or ``k`` is a ``bool``.
+            int sequences, or ``k``/``diameter_sweeps`` is a ``bool`` (or any
+            other non-``int``).
         ValueError: An unknown ``metric``/``utility``/``diameter`` string,
-            ``k <= 0``, a negative ``diameter_sweeps``, ``eps`` outside
-            ``(0, 1]``, a negative or non-finite ``lam``, ``utilities`` whose
-            length is not ``n``, a negative weight,
+            ``k <= 0`` or a ``k``/``diameter_sweeps`` outside the signed 64-bit
+            range, a negative ``diameter_sweeps``, ``eps`` outside
+            ``[np.finfo(np.float32).eps, 1]``, a negative or non-finite ``lam``,
+            ``utilities`` whose length is not ``n``, a negative weight,
             a negative coverage id, a ``utilities`` array given with
             ``"facility_location"``, no ``utilities`` with ``"coverage"``, an
             empty or zero-dimensional ``vectors``, a NaN or infinite coordinate,
             or (cosine only) a row that cannot be normalised.
+
+    Note:
+        The solve runs on rayon's process-global thread pool, created on the
+        first call and never shut down. Its size comes from ``RAYON_NUM_THREADS``
+        (read once, at first use) or from the available parallelism; there is no
+        per-call thread count. On Linux, forking after a first call --
+        ``os.fork``, or ``multiprocessing`` with the default ``fork`` start
+        method -- gives the child a pool whose worker threads do not exist, and
+        the child's next call deadlocks. Use the ``spawn`` or ``forkserver``
+        start method, or make the first ``divsel`` call inside each child.
     """
 
 def gist_select_full(

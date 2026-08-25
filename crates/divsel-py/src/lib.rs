@@ -15,6 +15,18 @@
 //! Free-threaded CPython (3.14t) is supported by default -- PyO3 0.28+ makes
 //! that opt-out and this module does not opt out -- but such a wheel is version
 //! specific (`cp314t`), not `abi3`.
+//!
+//! # Threads
+//!
+//! The threshold sweep runs on rayon's **process-global** thread pool, which is
+//! built lazily on the first call and never torn down: it sizes itself from
+//! `RAYON_NUM_THREADS`, or from the available parallelism when that is unset, and
+//! the variable is read once, at first use. There is no per-call thread count and
+//! no shutdown hook. A process that forks after a first call (`os.fork`, or
+//! `multiprocessing` with the default `fork` start method on Linux) inherits a
+//! pool whose worker threads do not exist in the child, and the child's next
+//! sweep deadlocks; use the `spawn` or `forkserver` start method, or make the
+//! first call in each child.
 
 #![deny(missing_docs)]
 #![warn(clippy::all)]
@@ -26,7 +38,7 @@ use divsel::{
 use numpy::{PyArray1, PyArray2, PyArrayMethods, PyUntypedArrayMethods};
 use pyo3::exceptions::{PyTypeError, PyValueError};
 use pyo3::prelude::*;
-use pyo3::types::{PyBool, PyDict};
+use pyo3::types::{PyBool, PyDict, PyInt};
 
 /// Raised for any `vectors` that is not exactly a C-contiguous `float32` matrix.
 const VECTORS_TYPE_ERROR: &str = "vectors must be a C-contiguous float32 array of shape (n, d); \
@@ -145,6 +157,14 @@ fn linear_weights(utilities: Option<&Bound<'_, PyAny>>) -> PyResult<Option<Vec<f
 /// `ValueError` naming the row, and so is a universe that does not fit `usize`
 /// (only reachable on a 32-bit target); anything that is not such a nested
 /// sequence is a `TypeError`.
+///
+/// The universe is not free and it is not a bit per item: [`Coverage`] holds a
+/// `Vec<bool>`, one **byte** per id, and the sweep hands every rayon job its own
+/// [`Utility::boxed_clone`] of it -- measured at about 17.5 bytes per id of peak
+/// working set on a 16-core host. A single sparse id therefore decides the
+/// footprint: `2**24` costs roughly 280 MB, `2**31` roughly 36 GB. Ids must be
+/// dense; nothing here can cap a universe the caller did not intend, because the
+/// ids are all it is given.
 fn coverage_sets(utilities: Option<&Bound<'_, PyAny>>) -> PyResult<(Vec<Vec<u32>>, usize)> {
     let Some(obj) = utilities else {
         return Err(PyValueError::new_err(
@@ -185,6 +205,31 @@ fn coverage_sets(utilities: Option<&Bound<'_, PyAny>>) -> PyResult<(Vec<Vec<u32>
     Ok((sets, universe))
 }
 
+/// One of the two integer budgets (`k`, `diameter_sweeps`), extracted the same
+/// way so the pair cannot drift apart.
+///
+/// `bool` is a subclass of `int` in Python, so a plain integer extraction would
+/// silently read `k=True` as `k=1` and `diameter_sweeps=True` as one sweep; that
+/// is never what a caller meant, and it is a `TypeError` here. A Python `int`
+/// too large for `i64` is reported as a `ValueError` -- the range error it is --
+/// rather than as the `OverflowError` a `usize`/`i64` extraction raises, which is
+/// an exception class this module's contract does not list. Anything that is not
+/// an `int` at all keeps the `TypeError` the extraction itself produces.
+fn budget(value: &Bound<'_, PyAny>, name: &str) -> PyResult<i64> {
+    if value.is_instance_of::<PyBool>() {
+        return Err(PyTypeError::new_err(format!(
+            "{name} must be an int, not bool"
+        )));
+    }
+    match value.extract::<i64>() {
+        Ok(value) => Ok(value),
+        Err(_) if value.is_instance_of::<PyInt>() => Err(PyValueError::new_err(format!(
+            "{name} must fit a 64-bit signed integer"
+        ))),
+        Err(err) => Err(err),
+    }
+}
+
 /// The shared body of both entry points: validate and cast the Python
 /// arguments while attached, then run [`gist`] detached from the interpreter.
 #[allow(clippy::too_many_arguments)]
@@ -199,21 +244,22 @@ fn solve(
     utility: &str,
     exhaustive_thresholds: bool,
     diameter: &str,
-    diameter_sweeps: i64,
+    diameter_sweeps: Option<&Bound<'_, PyAny>>,
 ) -> PyResult<GistResult> {
-    // `bool` is a subclass of `int` in Python, so an integer extraction would
-    // silently take `k=True` as `k=1`; that is never what a caller meant.
-    if k.is_instance_of::<PyBool>() {
-        return Err(PyTypeError::new_err("k must be an int, not bool"));
-    }
-    // Both budgets are extracted as `i64` so that a negative Python int is a
-    // `ValueError` here rather than pyo3's `OverflowError` from a `usize`
-    // extraction. The core rejects `k == 0` too; folding it in keeps one message.
-    let k: i64 = k.extract()?;
+    // Both budgets go through `budget`: no bool, no `OverflowError`, and a
+    // negative Python int lands as a `ValueError` here rather than as pyo3's
+    // `OverflowError` from a `usize` extraction. The core rejects `k == 0` too;
+    // folding it in keeps one message.
+    let k = budget(k, "k")?;
     let k = usize::try_from(k)
         .ok()
         .filter(|&k| k > 0)
         .ok_or_else(|| PyValueError::new_err("k must be greater than zero"))?;
+    // Omitted (`None`) is the documented default of 3 double sweeps.
+    let diameter_sweeps = match diameter_sweeps {
+        Some(value) => budget(value, "diameter_sweeps")?,
+        None => 3,
+    };
     let diameter_sweeps = usize::try_from(diameter_sweeps)
         .map_err(|_| PyValueError::new_err("diameter_sweeps must be non-negative"))?;
     let metric = parse_metric(metric)?;
@@ -299,7 +345,16 @@ fn solve(
 /// other diagnostics.
 #[pyfunction]
 #[pyo3(signature = (vectors, utilities=None, *, k, lam=1.0, eps=0.1, metric="cosine",
-    utility="linear", exhaustive_thresholds=false, diameter="exact", diameter_sweeps=3))]
+    utility="linear", exhaustive_thresholds=false, diameter="exact", diameter_sweeps=None))]
+// `diameter_sweeps` is taken as an object so that a `bool` can be rejected the
+// way `k`'s is (see `budget`), which a plain `i64` parameter cannot do -- pyo3
+// would already have read `True` as `1`. Omitting it still means 3 sweeps, and
+// the explicit text signature is what keeps that visible to `help()` and
+// `inspect.signature`, since the pyo3 default is now `None`.
+#[pyo3(
+    text_signature = "(vectors, utilities=None, *, k, lam=1.0, eps=0.1, metric='cosine', \
+    utility='linear', exhaustive_thresholds=False, diameter='exact', diameter_sweeps=3)"
+)]
 #[allow(clippy::too_many_arguments)]
 fn gist_select(
     py: Python<'_>,
@@ -312,7 +367,7 @@ fn gist_select(
     utility: &str,
     exhaustive_thresholds: bool,
     diameter: &str,
-    diameter_sweeps: i64,
+    diameter_sweeps: Option<&Bound<'_, PyAny>>,
 ) -> PyResult<Vec<usize>> {
     Ok(solve(
         py,
@@ -342,7 +397,16 @@ fn gist_select(
 /// metric caveat and zero-copy behaviour as `gist_select`.
 #[pyfunction]
 #[pyo3(signature = (vectors, utilities=None, *, k, lam=1.0, eps=0.1, metric="cosine",
-    utility="linear", exhaustive_thresholds=false, diameter="exact", diameter_sweeps=3))]
+    utility="linear", exhaustive_thresholds=false, diameter="exact", diameter_sweeps=None))]
+// `diameter_sweeps` is taken as an object so that a `bool` can be rejected the
+// way `k`'s is (see `budget`), which a plain `i64` parameter cannot do -- pyo3
+// would already have read `True` as `1`. Omitting it still means 3 sweeps, and
+// the explicit text signature is what keeps that visible to `help()` and
+// `inspect.signature`, since the pyo3 default is now `None`.
+#[pyo3(
+    text_signature = "(vectors, utilities=None, *, k, lam=1.0, eps=0.1, metric='cosine', \
+    utility='linear', exhaustive_thresholds=False, diameter='exact', diameter_sweeps=3)"
+)]
 #[allow(clippy::too_many_arguments)]
 fn gist_select_full<'py>(
     py: Python<'py>,
@@ -355,7 +419,7 @@ fn gist_select_full<'py>(
     utility: &str,
     exhaustive_thresholds: bool,
     diameter: &str,
-    diameter_sweeps: i64,
+    diameter_sweeps: Option<&Bound<'py, PyAny>>,
 ) -> PyResult<Bound<'py, PyDict>> {
     let result = solve(
         py,

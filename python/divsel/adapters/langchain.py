@@ -17,7 +17,7 @@ Verified against the installed ``langchain-core`` 1.6.0 source
 from __future__ import annotations
 
 import warnings
-from typing import Any
+from typing import Any, Literal
 
 import numpy as np
 
@@ -29,7 +29,7 @@ try:
     from langchain_core.documents import Document
     from langchain_core.retrievers import BaseRetriever
     from langchain_core.vectorstores import VectorStore
-    from pydantic import ConfigDict
+    from pydantic import ConfigDict, Field
 except ImportError as exc:  # pragma: no cover - exercised in framework-free venvs
     raise ImportError(
         "divsel.adapters.langchain requires langchain-core. "
@@ -62,19 +62,25 @@ class DivselRetriever(BaseRetriever):
     ``strict=True`` to get a ``ValueError`` instead.
     """
 
+    # Every field carries its constraint, so an unusable configuration is a
+    # pydantic ValidationError at construction instead of a Rust-worded
+    # ValueError from inside the first query, after a full fetch+embed round
+    # trip. The runtime `utility` branch below stays as a guard: pydantic does
+    # not revalidate assignment by default, so a field can still be changed to
+    # something invalid after the model is built.
     vectorstore: VectorStore
     """The wrapped vector store; must implement ``similarity_search_by_vector``."""
-    k: int = 5
-    """Number of documents to return (``|S| <= k``)."""
-    fetch_k: int = 20
+    k: int = Field(default=5, gt=0)
+    """Number of documents to return (``|S| <= k``); must be ``> 0``."""
+    fetch_k: int = Field(default=20, gt=0)
     """Number of candidates fetched by query similarity before diversifying."""
-    lam: float = 1.0
-    """Weight of the min-pairwise-distance diversity term."""
-    eps: float = 0.1
+    lam: float = Field(default=1.0, ge=0.0)
+    """Weight of the min-pairwise-distance diversity term; must be ``>= 0``."""
+    eps: float = Field(default=0.1, gt=0.0, le=1.0)
     """GIST threshold-sweep accuracy, in ``(0, 1]``."""
-    metric: str = "cosine"
+    metric: Literal["cosine", "euclidean"] = "cosine"
     """``"cosine"`` or ``"euclidean"``."""
-    utility: str = "linear"
+    utility: Literal["linear", "facility_location"] = "linear"
     """``"linear"`` (cosine-relevance weights) or ``"facility_location"``."""
     strict: bool = False
     """Raise ``ValueError`` instead of falling back to plain top-k."""

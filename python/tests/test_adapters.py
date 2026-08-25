@@ -22,6 +22,7 @@ import functools
 import importlib.util
 import subprocess
 import sys
+import warnings
 from types import SimpleNamespace
 
 import numpy as np
@@ -97,8 +98,15 @@ def test_import_divsel_imports_no_framework():
         " if m.startswith(('langchain', 'llama_index'))]\n"
         "print(','.join(bad))\n"
     )
+    # A child that hangs (a half-written .pyd, an import hook that blocks, an
+    # antivirus stall) must fail this test, not the whole pytest run: nothing in
+    # pyproject.toml sets a per-test timeout.
     proc = subprocess.run(
-        [sys.executable, "-c", code], capture_output=True, text=True, check=False
+        [sys.executable, "-c", code],
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=120,
     )
     assert proc.returncode == 0, proc.stderr
     assert proc.stdout.strip() == ""
@@ -447,3 +455,306 @@ def test_llamaindex_embed_model_diversifies():
         [TABLE[n.node.get_content()] for n in _topk_by_score(nodes, 4)]
     )
     assert got > baseline
+
+
+# --------------------------------------------------------------------------- #
+# adapters package: the lazy re-exports named in __all__                      #
+# --------------------------------------------------------------------------- #
+
+
+def test_adapters_unknown_attribute_raises_attributeerror():
+    import divsel.adapters as adapters
+
+    with pytest.raises(AttributeError, match="has no attribute 'nope'"):
+        adapters.nope  # noqa: B018
+
+
+def test_adapters_lazy_reexport_of_the_langchain_class():
+    pytest.importorskip("langchain_core")
+    import divsel.adapters as adapters
+    from divsel.adapters.langchain import DivselRetriever
+
+    assert "DivselRetriever" in adapters.__all__
+    assert getattr(adapters, "DivselRetriever") is DivselRetriever
+
+
+def test_adapters_lazy_reexport_of_the_llamaindex_class():
+    pytest.importorskip("llama_index.core")
+    import divsel.adapters as adapters
+    from divsel.adapters.llamaindex import DivselNodePostprocessor
+
+    assert "DivselNodePostprocessor" in adapters.__all__
+    assert getattr(adapters, "DivselNodePostprocessor") is DivselNodePostprocessor
+
+
+# --------------------------------------------------------------------------- #
+# LangChain: construction-time validation and every fallback branch           #
+# --------------------------------------------------------------------------- #
+
+
+@pytest.mark.parametrize(
+    "kwargs",
+    [
+        {"k": 0},
+        {"k": -1},
+        {"fetch_k": 0},
+        {"lam": -1.0},
+        {"eps": 0.0},
+        {"eps": 1.5},
+        {"metric": "manhattan"},
+        {"utility": "coverage"},
+    ],
+    ids=["k0", "k_neg", "fetch_k0", "lam_neg", "eps0", "eps_high", "metric", "utility"],
+)
+def test_langchain_invalid_configuration_fails_at_construction(kwargs):
+    """Every constraint is a field constraint, so nothing waits for a query.
+
+    Before this, ``DivselRetriever(vectorstore=vs, k=0).invoke("q")`` raised a
+    Rust-worded ``ValueError`` from inside ``_get_relevant_documents``, after a
+    full fetch-and-embed round trip.
+    """
+    pytest.importorskip("langchain_core")
+    from divsel.adapters.langchain import DivselRetriever
+
+    # pydantic's ValidationError is a ValueError subclass.
+    with pytest.raises(ValueError):
+        DivselRetriever(vectorstore=_lc().TinyStore(), **kwargs)
+
+
+@functools.lru_cache(maxsize=1)
+def _lc_edge() -> SimpleNamespace:
+    """Vector stores for the LangChain adapter's fallback and edge branches."""
+    from langchain_core.documents import Document
+    from langchain_core.embeddings import Embeddings
+    from langchain_core.vectorstores import VectorStore
+
+    class Partial(Embeddings):
+        """Embeddings whose two halves can each be turned off."""
+
+        def __init__(self, query=True, documents=True):
+            self._query = query
+            self._documents = documents
+
+        def embed_query(self, text):
+            if not self._query:
+                raise NotImplementedError
+            return TABLE[text]
+
+        def embed_documents(self, texts):
+            if not self._documents:
+                raise NotImplementedError
+            return [TABLE[t] for t in texts]
+
+    class ZeroEmbeddings(Embeddings):
+        """A zero query vector and one zero document vector."""
+
+        def embed_query(self, text):
+            return [0.0, 0.0, 0.0, 0.0]
+
+        def embed_documents(self, texts):
+            return [[0.0] * 4 if t == TEXTS[0] else TABLE[t] for t in texts]
+
+    class Store(VectorStore):
+        def __init__(self, embeddings, *, by_vector=True, candidates=None):
+            self._docs = [Document(page_content=t) for t in TEXTS]
+            self._embeddings = embeddings
+            self._by_vector = by_vector
+            self._candidates = candidates
+
+        @property
+        def embeddings(self):
+            return self._embeddings
+
+        @classmethod
+        def from_texts(cls, texts, embedding, metadatas=None, **kwargs):
+            raise NotImplementedError
+
+        def similarity_search_by_vector(self, embedding, k=4, **kwargs):
+            if not self._by_vector:
+                raise NotImplementedError
+            if self._candidates is not None:
+                return list(self._candidates)
+            return [self._docs[i] for i in RELEVANCE_ORDER[:k]]
+
+        def similarity_search(self, query, k=4, **kwargs):
+            return [self._docs[i] for i in RELEVANCE_ORDER[:k]]
+
+    return SimpleNamespace(Partial=Partial, ZeroEmbeddings=ZeroEmbeddings, Store=Store)
+
+
+@pytest.mark.parametrize(
+    "broken,reason",
+    [
+        ("embed_query", "embed_query is not implemented"),
+        ("similarity_search_by_vector", "similarity_search_by_vector is not implemented"),
+        ("embed_documents", "embed_documents is not implemented"),
+    ],
+)
+def test_langchain_falls_back_on_each_notimplemented_hook(broken, reason):
+    pytest.importorskip("langchain_core")
+    from divsel.adapters import DivselFallbackWarning
+    from divsel.adapters.langchain import DivselRetriever
+
+    ns = _lc_edge()
+    if broken == "embed_query":
+        store = ns.Store(ns.Partial(query=False))
+    elif broken == "embed_documents":
+        store = ns.Store(ns.Partial(documents=False))
+    else:
+        store = ns.Store(ns.Partial(), by_vector=False)
+
+    retriever = DivselRetriever(vectorstore=store, k=4)
+    with pytest.warns(DivselFallbackWarning, match=reason):
+        docs = retriever.invoke(QUERY_TEXT)
+    assert [d.page_content for d in docs] == [TEXTS[i] for i in RELEVANCE_ORDER[:4]]
+
+    # ... and strict=True turns each of them into a ValueError instead.
+    strict = DivselRetriever(vectorstore=store, k=4, strict=True)
+    with pytest.raises(ValueError, match=reason):
+        strict.invoke(QUERY_TEXT)
+
+
+def test_langchain_no_candidates_returns_empty_without_warning():
+    pytest.importorskip("langchain_core")
+    from divsel.adapters.langchain import DivselRetriever
+
+    ns = _lc_edge()
+    store = ns.Store(ns.Partial(), candidates=[])
+    retriever = DivselRetriever(vectorstore=store, k=4)
+    # An empty candidate set is not a fallback: there is nothing to diversify
+    # and nothing to warn about.
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        assert retriever.invoke(QUERY_TEXT) == []
+
+
+def test_langchain_zero_norm_vectors_do_not_divide_by_zero():
+    pytest.importorskip("langchain_core")
+    from divsel.adapters.langchain import DivselRetriever
+
+    ns = _lc_edge()
+    # Euclidean: a zero row is a legal point (cosine would reject it as
+    # unnormalisable, which is a core-level error, not this guard).
+    retriever = DivselRetriever(
+        vectorstore=ns.Store(ns.ZeroEmbeddings()), k=3, fetch_k=6, metric="euclidean"
+    )
+    docs = retriever.invoke(QUERY_TEXT)
+    assert 0 < len(docs) <= 3
+    assert len({d.page_content for d in docs}) == len(docs)
+
+
+def test_langchain_facility_location_diversifies():
+    pytest.importorskip("langchain_core")
+    docs = _make_retriever(
+        k=4, fetch_k=12, lam=1.0, utility="facility_location"
+    ).invoke(QUERY_TEXT)
+    assert len(docs) == 4
+    got = min_pairwise_cos_dist([TABLE[d.page_content] for d in docs])
+    assert got > topk_diversity(4)
+
+
+def test_langchain_unknown_utility_after_construction_raises():
+    pytest.importorskip("langchain_core")
+
+    retriever = _make_retriever(k=3, fetch_k=6)
+    # pydantic does not revalidate assignment, so the runtime branch is still
+    # reachable and still has to say what it supports.
+    object.__setattr__(retriever, "utility", "coverage")
+    with pytest.raises(ValueError, match="utility='linear' or 'facility_location'"):
+        retriever.invoke(QUERY_TEXT)
+
+
+# --------------------------------------------------------------------------- #
+# LlamaIndex: construction-time validation and the remaining branches         #
+# --------------------------------------------------------------------------- #
+
+
+@pytest.mark.parametrize(
+    "kwargs",
+    [
+        {"k": 0},
+        {"k": -1},
+        {"lam": -1.0},
+        {"eps": 0.0},
+        {"eps": 1.5},
+        {"metric": "manhattan"},
+        {"utility": "coverage"},
+    ],
+    ids=["k0", "k_neg", "lam_neg", "eps0", "eps_high", "metric", "utility"],
+)
+def test_llamaindex_invalid_configuration_fails_at_construction(kwargs):
+    pytest.importorskip("llama_index.core")
+    from divsel.adapters.llamaindex import DivselNodePostprocessor
+
+    with pytest.raises(ValueError):
+        DivselNodePostprocessor(**kwargs)
+
+
+def test_llamaindex_facility_location_diversifies():
+    pytest.importorskip("llama_index.core")
+    from divsel.adapters.llamaindex import DivselNodePostprocessor
+
+    ns = _li()
+    nodes = ns.make_nodes()
+    out = DivselNodePostprocessor(k=4, lam=1.0, utility="facility_location").postprocess_nodes(
+        nodes, query_str=QUERY_TEXT
+    )
+    assert len(out) == 4
+    got = min_pairwise_cos_dist([n.node.embedding for n in out])
+    baseline = min_pairwise_cos_dist(
+        [n.node.embedding for n in _topk_by_score(nodes, 4)]
+    )
+    assert got > baseline
+
+
+def test_llamaindex_unknown_utility_after_construction_raises():
+    pytest.importorskip("llama_index.core")
+    from divsel.adapters.llamaindex import DivselNodePostprocessor
+
+    ns = _li()
+    pp = DivselNodePostprocessor(k=3)
+    object.__setattr__(pp, "utility", "coverage")
+    with pytest.raises(ValueError, match="utility='linear' or 'facility_location'"):
+        pp.postprocess_nodes(ns.make_nodes(), query_str=QUERY_TEXT)
+
+
+def test_llamaindex_negative_scores_are_shifted_non_negative():
+    """Retrievers may report negative relevance; divsel's weights may not be."""
+    pytest.importorskip("llama_index.core")
+    from divsel.adapters.llamaindex import DivselNodePostprocessor
+
+    ns = _li()
+    nodes = ns.make_nodes()
+    for i, node in enumerate(nodes):
+        node.score = SCORES[i] - 1.5  # every score now in [-0.65, -0.5]
+    vectors = np.ascontiguousarray([n.node.embedding for n in nodes], dtype=np.float32)
+
+    w = DivselNodePostprocessor._linear_weights(nodes, vectors, None)
+    assert (w >= 0.0).all()
+    assert w.min() == 0.0
+    # The shift is a translation: differences survive it exactly.
+    assert np.allclose(np.diff(w), np.diff([n.score for n in nodes]))
+
+    # The shifted weights are tiny next to lam, so GIST legitimately returns
+    # fewer than k here (a singleton's div is d_max); what matters is that the
+    # negative scores went through the core at all instead of being rejected as
+    # negative weights.
+    out = DivselNodePostprocessor(k=4, lam=1.0).postprocess_nodes(nodes, query_str=QUERY_TEXT)
+    assert 0 < len(out) <= 4
+    assert all(n in nodes for n in out)
+
+
+def test_llamaindex_zero_norm_vectors_do_not_divide_by_zero():
+    pytest.importorskip("llama_index.core")
+    from divsel.adapters.llamaindex import DivselNodePostprocessor
+
+    ns = _li()
+    nodes = ns.make_nodes(with_scores=False)
+    vectors = np.zeros((len(nodes), 4), dtype=np.float32)
+    bundle = ns.QueryBundle(query_str=QUERY_TEXT, embedding=[0.0, 0.0, 0.0, 0.0])
+
+    w = DivselNodePostprocessor._linear_weights(nodes, vectors, bundle)
+    assert w is not None
+    assert np.isfinite(w).all()
+    # cos is 0 against a zero query, so every weight is the shift itself.
+    assert np.allclose(w, 1.0)
