@@ -64,7 +64,10 @@ def gist_select(
     call); ``metric="cosine"`` makes exactly one L2-normalised copy. The caller's
     array is never modified, and the solve runs with the interpreter lock
     released, so other Python threads keep running while Rust parallelises the
-    threshold sweep.
+    threshold sweep. That read lock only excludes other *native* mutable borrows
+    of the buffer: it does not stop another Python thread from writing into
+    ``vectors`` while a call is in flight, so do not mutate the array
+    concurrently (under ``"euclidean"`` the solve reads it in place).
 
     Args:
         vectors: A C-contiguous ``float32`` array of shape ``(n, d)``. Anything
@@ -77,11 +80,14 @@ def gist_select(
             a sequence of ``n`` sequences of non-negative int item ids; the
             universe is inferred as the largest id plus one, and a bitmap of that
             size is allocated, so ids must be dense (a huge sparse id allocates a
-            bitmap of that size). For ``"facility_location"``, must be ``None``.
-        k: The budget; ``|S| <= k``. Must be greater than zero: ``k <= 0``
-            raises ``ValueError``. ``k > n`` is clamped to ``n``. The result can
-            be shorter than ``k`` when no remaining point is at least the winning
-            threshold away from every selected one.
+            bitmap of that size; ids above ``2**32 - 1``, or a universe that does
+            not fit the platform's ``usize``, raise ``ValueError``). For
+            ``"facility_location"``, must be ``None``.
+        k: The budget; ``|S| <= k``. Must be an ``int`` greater than zero:
+            ``k <= 0`` raises ``ValueError`` and a ``bool`` raises ``TypeError``
+            (``True`` is not read as ``1``). ``k > n`` is clamped to ``n``. The
+            result can be shorter than ``k`` when no remaining point is at least
+            the winning threshold away from every selected one.
         lam: The weight of the diversity term, finite and ``>= 0``.
         eps: The sweep accuracy in ``(0, 1]``; the threshold set has
             ``1 + floor(log(2/eps) / log(1+eps))`` entries (32 at the default).
@@ -97,15 +103,17 @@ def gist_select(
             ``[d_max/2, d_max]``.
         diameter_sweeps: Number of double sweeps under ``diameter="approx"``.
             Must be ``>= 0`` (a negative value raises ``ValueError``); ``0`` is
-            treated as ``1``; ignored under ``"exact"``.
+            treated as ``1``; ignored under ``"exact"``. No upper bound is
+            enforced: each sweep costs ``O(n * d)``, so a very large value simply
+            runs that long.
 
     Returns:
         The selected row indices, in selection order, at most ``k`` of them.
 
     Raises:
         TypeError: ``vectors`` or a linear ``utilities`` is not the required
-            C-contiguous array, or a coverage ``utilities`` is not a sequence of
-            int sequences.
+            C-contiguous array, a coverage ``utilities`` is not a sequence of
+            int sequences, or ``k`` is a ``bool``.
         ValueError: An unknown ``metric``/``utility``/``diameter`` string,
             ``k <= 0``, a negative ``diameter_sweeps``, ``eps`` outside
             ``(0, 1]``, a negative or non-finite ``lam``, ``utilities`` whose

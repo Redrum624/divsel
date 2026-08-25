@@ -34,6 +34,10 @@ def _utilities_for(kind: str, x: np.ndarray):
     return None
 
 
+def _f32_column(values):
+    return np.ascontiguousarray(np.array(values, dtype=np.float32).reshape(-1, 1))
+
+
 # ---- package surface --------------------------------------------------------
 
 
@@ -129,6 +133,16 @@ def test_negative_k_raises_valueerror(k):
         gist_select_full(x, k=k)
 
 
+@pytest.mark.parametrize("k", [True, False], ids=["true", "false"])
+def test_bool_k_raises_typeerror(k):
+    # bool is an int subclass, so an integer extraction would read True as 1.
+    x = _random_vectors(4, 2)
+    with pytest.raises(TypeError, match="k must be an int, not bool"):
+        gist_select(x, k=k)
+    with pytest.raises(TypeError, match="k must be an int, not bool"):
+        gist_select_full(x, k=k)
+
+
 def test_negative_diameter_sweeps_raises_valueerror():
     x = _random_vectors(4, 2)
     with pytest.raises(ValueError, match="diameter_sweeps must be non-negative"):
@@ -171,10 +185,18 @@ def test_coverage_with_wrong_number_of_sets_raises_valueerror():
 
 def test_invalid_eps_and_lambda_raise_valueerror():
     x = _random_vectors(4, 2)
-    with pytest.raises(ValueError, match="epsilon"):
+    with pytest.raises(ValueError, match=r"epsilon 0 must be in the range 0 < eps <= 1"):
         gist_select(x, k=2, eps=0.0)
+    with pytest.raises(ValueError, match="epsilon"):
+        gist_select(x, k=2, eps=1.0000001)
     with pytest.raises(ValueError, match="lambda"):
         gist_select(x, k=2, lam=-1.0)
+
+
+def test_eps_of_exactly_one_is_accepted():
+    # The range is 0 < eps <= 1, closed at the top; the message says so.
+    x = _random_vectors(6, 3)
+    assert 0 < len(gist_select(x, k=2, eps=1.0)) <= 2
 
 
 def test_empty_and_zero_dim_inputs_raise_valueerror():
@@ -340,5 +362,9 @@ def test_coverage_with_all_empty_sets_runs():
     assert r["selected"] == [0, 2]  # only diversity is left: the widest pair
 
 
-def _f32_column(values):
-    return np.ascontiguousarray(np.array(values, dtype=np.float32).reshape(-1, 1))
+def test_coverage_item_id_above_u32_max_raises_valueerror():
+    # The binding stores ids as u32; the universe (largest id + 1) is checked
+    # against usize separately, which only a 32-bit build can trip.
+    x = _random_vectors(2, 2)
+    with pytest.raises(ValueError, match=r"row 1 must be a non-negative int no larger than 4294967295"):
+        gist_select(x, [[0], [2**32]], k=1, utility="coverage")

@@ -7,7 +7,10 @@
 //! caller's array is never written to in either case. The solve runs with the
 //! interpreter detached ([`Python::detach`]), so rayon's threshold sweep
 //! parallelises and other Python threads keep running; the numpy read guard is
-//! held for the whole call.
+//! held for the whole call. That guard is the `numpy` crate's borrow flag: it
+//! excludes other *native* mutable borrows of the same buffer, and nothing
+//! else -- a Python thread writing into `vectors` while a call is in flight is
+//! not prevented.
 //!
 //! Free-threaded CPython (3.14t) is supported by default -- PyO3 0.28+ makes
 //! that opt-out and this module does not opt out -- but such a wheel is version
@@ -23,7 +26,7 @@ use divsel::{
 use numpy::{PyArray1, PyArray2, PyArrayMethods, PyUntypedArrayMethods};
 use pyo3::exceptions::{PyTypeError, PyValueError};
 use pyo3::prelude::*;
-use pyo3::types::PyDict;
+use pyo3::types::{PyBool, PyDict};
 
 /// Raised for any `vectors` that is not exactly a C-contiguous `float32` matrix.
 const VECTORS_TYPE_ERROR: &str = "vectors must be a C-contiguous float32 array of shape (n, d); \
@@ -51,9 +54,10 @@ enum UtilityKind {
 enum UtilitySpec {
     /// [`Linear`] with explicit weights, or [`Linear::uniform`] for `None`.
     Linear(Option<Vec<f64>>),
-    /// [`Coverage`] over these item lists; the universe is inferred as the
-    /// largest id plus one (`0` when every list is empty).
-    Coverage(Vec<Vec<u32>>),
+    /// [`Coverage`] over these item lists, with the universe already inferred
+    /// by [`coverage_sets`] as the largest id plus one (`0` when every list is
+    /// empty).
+    Coverage(Vec<Vec<u32>>, usize),
     /// [`FacilityLocation`], which needs the points themselves (and, under
     /// Euclidean distance, their `O(n^2)` diameter -- hence built detached).
     FacilityLocation,
@@ -65,14 +69,7 @@ impl UtilitySpec {
         Ok(match self {
             Self::Linear(None) => Box::new(Linear::uniform(pts.n())),
             Self::Linear(Some(weights)) => Box::new(Linear::new(weights)),
-            Self::Coverage(sets) => {
-                let universe = sets
-                    .iter()
-                    .flatten()
-                    .max()
-                    .map_or(0, |&largest| largest as usize + 1);
-                Box::new(Coverage::new(sets, universe)?)
-            }
+            Self::Coverage(sets, universe) => Box::new(Coverage::new(sets, universe)?),
             Self::FacilityLocation => Box::new(FacilityLocation::new(pts)),
         })
     }
@@ -130,7 +127,12 @@ fn linear_weights(utilities: Option<&Bound<'_, PyAny>>) -> PyResult<Option<Vec<f
     if !array.is_c_contiguous() {
         return Err(PyTypeError::new_err(UTILITIES_TYPE_ERROR));
     }
-    let guard = array.readonly();
+    let guard = array.try_readonly().map_err(|_| {
+        PyValueError::new_err(
+            "utilities is mutably borrowed by another native extension call; retry once it \
+             has returned",
+        )
+    })?;
     let weights = guard
         .as_slice()
         .map_err(|_| PyTypeError::new_err(UTILITIES_TYPE_ERROR))?;
@@ -138,9 +140,12 @@ fn linear_weights(utilities: Option<&Bound<'_, PyAny>>) -> PyResult<Option<Vec<f
 }
 
 /// The `utilities` argument for `utility="coverage"`: a sequence of sequences
-/// of non-negative ints. Negative or oversized ids are a `ValueError` naming the
-/// row; anything that is not such a nested sequence is a `TypeError`.
-fn coverage_sets(utilities: Option<&Bound<'_, PyAny>>) -> PyResult<Vec<Vec<u32>>> {
+/// of non-negative ints, returned with the inferred universe (the largest id
+/// plus one; `0` when every list is empty). Negative or oversized ids are a
+/// `ValueError` naming the row, and so is a universe that does not fit `usize`
+/// (only reachable on a 32-bit target); anything that is not such a nested
+/// sequence is a `TypeError`.
+fn coverage_sets(utilities: Option<&Bound<'_, PyAny>>) -> PyResult<(Vec<Vec<u32>>, usize)> {
     let Some(obj) = utilities else {
         return Err(PyValueError::new_err(
             "utility='coverage' requires utilities: a sequence of sequences of item ids, \
@@ -165,7 +170,19 @@ fn coverage_sets(utilities: Option<&Bound<'_, PyAny>>) -> PyResult<Vec<Vec<u32>>
         }
         sets.push(set);
     }
-    Ok(sets)
+    let universe = match sets.iter().flatten().max() {
+        None => 0,
+        Some(&largest) => usize::try_from(largest)
+            .ok()
+            .and_then(|largest| largest.checked_add(1))
+            .ok_or_else(|| {
+                PyValueError::new_err(format!(
+                    "coverage item id {largest} is too large for this platform: the inferred \
+                     universe {largest} + 1 does not fit a usize"
+                ))
+            })?,
+    };
+    Ok((sets, universe))
 }
 
 /// The shared body of both entry points: validate and cast the Python
@@ -175,7 +192,7 @@ fn solve(
     py: Python<'_>,
     vectors: &Bound<'_, PyAny>,
     utilities: Option<&Bound<'_, PyAny>>,
-    k: i64,
+    k: &Bound<'_, PyAny>,
     lam: f64,
     eps: f32,
     metric: &str,
@@ -184,9 +201,15 @@ fn solve(
     diameter: &str,
     diameter_sweeps: i64,
 ) -> PyResult<GistResult> {
-    // Both budgets arrive as `i64` so that a negative Python int is a
+    // `bool` is a subclass of `int` in Python, so an integer extraction would
+    // silently take `k=True` as `k=1`; that is never what a caller meant.
+    if k.is_instance_of::<PyBool>() {
+        return Err(PyTypeError::new_err("k must be an int, not bool"));
+    }
+    // Both budgets are extracted as `i64` so that a negative Python int is a
     // `ValueError` here rather than pyo3's `OverflowError` from a `usize`
     // extraction. The core rejects `k == 0` too; folding it in keeps one message.
+    let k: i64 = k.extract()?;
     let k = usize::try_from(k)
         .ok()
         .filter(|&k| k > 0)
@@ -213,8 +236,15 @@ fn solve(
         return Err(PyTypeError::new_err(VECTORS_TYPE_ERROR));
     }
     // A borrow-checked read lock on the numpy buffer. It lives to the end of
-    // this function, i.e. across the detached solve that borrows `data`.
-    let guard = array.readonly();
+    // this function, i.e. across the detached solve that borrows `data`. The
+    // fallible form turns a conflicting native mutable borrow into a Python
+    // exception instead of the `PanicException` `readonly()` would raise.
+    let guard = array.try_readonly().map_err(|_| {
+        PyValueError::new_err(
+            "vectors is mutably borrowed by another native extension call; retry once it has \
+             returned",
+        )
+    })?;
     let data: &[f32] = guard
         .as_slice()
         .map_err(|_| PyTypeError::new_err(VECTORS_TYPE_ERROR))?;
@@ -222,7 +252,10 @@ fn solve(
 
     let spec = match kind {
         UtilityKind::Linear => UtilitySpec::Linear(linear_weights(utilities)?),
-        UtilityKind::Coverage => UtilitySpec::Coverage(coverage_sets(utilities)?),
+        UtilityKind::Coverage => {
+            let (sets, universe) = coverage_sets(utilities)?;
+            UtilitySpec::Coverage(sets, universe)
+        }
         UtilityKind::FacilityLocation => {
             if utilities.is_some() {
                 return Err(PyValueError::new_err(
@@ -261,7 +294,9 @@ fn solve(
 /// with the interpreter lock released.
 ///
 /// Returns the selected row indices, in selection order, at most `k` of them.
-/// See `gist_select_full` for the objective value and the other diagnostics.
+/// `k` must be a positive `int` -- a `bool` is rejected with `TypeError` rather
+/// than read as `0`/`1`. See `gist_select_full` for the objective value and the
+/// other diagnostics.
 #[pyfunction]
 #[pyo3(signature = (vectors, utilities=None, *, k, lam=1.0, eps=0.1, metric="cosine",
     utility="linear", exhaustive_thresholds=false, diameter="exact", diameter_sweeps=3))]
@@ -270,7 +305,7 @@ fn gist_select(
     py: Python<'_>,
     vectors: &Bound<'_, PyAny>,
     utilities: Option<&Bound<'_, PyAny>>,
-    k: i64,
+    k: &Bound<'_, PyAny>,
     lam: f64,
     eps: f32,
     metric: &str,
@@ -313,7 +348,7 @@ fn gist_select_full<'py>(
     py: Python<'py>,
     vectors: &Bound<'py, PyAny>,
     utilities: Option<&Bound<'py, PyAny>>,
-    k: i64,
+    k: &Bound<'py, PyAny>,
     lam: f64,
     eps: f32,
     metric: &str,
