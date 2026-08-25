@@ -662,4 +662,63 @@ mod tests {
             lazy.calls()
         );
     }
+
+    /// Line 4's filter is **non-strict**, on both evaluation paths: a candidate
+    /// exactly `d` away from the selection is feasible.
+    ///
+    /// `x = 0, 1, 5` with coverage sets `{0,1,2}`, `{3,4}`, `{5}`. The first pick
+    /// is point 0 (marginal 3); point 1 then sits at exactly `d = 1` and carries
+    /// the larger marginal, so it is taken if and only if `dist(v, S) >= d`
+    /// admits it -- a strict `>` reports `[0, 2]` instead. The CELF branch is the
+    /// one every submodular utility takes, and the golden fixture's only rule-15
+    /// case is linear, so it never reaches this filter.
+    #[test]
+    fn line_four_admits_a_candidate_exactly_d_away_on_both_paths() {
+        let pts = Points::new(vec![0.0, 1.0, 5.0], 1, Metric::Euclidean).expect("line fixture");
+        assert_eq!(pts.dist(0, 1), 1.0);
+        let sets = vec![vec![0, 1, 2], vec![3, 4], vec![5]];
+        let mut lazy = Coverage::new(sets.clone(), 6).expect("coverage sets");
+        let mut plain = Coverage::new(sets, 6).expect("coverage sets");
+        assert!(
+            !lazy.is_linear(),
+            "Coverage has to take the CELF path for this to test it"
+        );
+
+        assert_eq!(greedy_independent_set(&pts, &mut lazy, 1.0, 2), vec![0, 1]);
+        assert_eq!(
+            greedy_independent_set_naive(&pts, &mut plain, 1.0, 2),
+            vec![0, 1]
+        );
+
+        // One ulp above the boundary the same instance drops the near point,
+        // which is what makes the two assertions above a boundary test rather
+        // than a restatement of the `d = 0` run.
+        let above = 1.0 + f32::EPSILON;
+        assert_eq!(
+            greedy_independent_set(&pts, &mut lazy, above, 2),
+            vec![0, 2]
+        );
+        assert_eq!(
+            greedy_independent_set_naive(&pts, &mut plain, above, 2),
+            vec![0, 2]
+        );
+    }
+
+    /// The CELF path opens with [`Utility::reset`], so a dirty utility is
+    /// tolerated -- the documented contract, and the one the sweep relies on when
+    /// a worker reuses its clone across thresholds.
+    #[test]
+    fn the_celf_path_resets_a_dirty_utility_on_entry() {
+        let pts = Points::new(vec![0.0, 1.0, 5.0], 1, Metric::Euclidean).expect("line fixture");
+        let sets = vec![vec![0, 1, 2], vec![3, 4], vec![5]];
+        let mut clean = Coverage::new(sets.clone(), 6).expect("coverage sets");
+        let expected = greedy_independent_set(&pts, &mut clean, 0.0, 2);
+        assert_eq!(expected, vec![0, 1]);
+
+        let mut dirty = Coverage::new(sets, 6).expect("coverage sets");
+        dirty.commit(0, &pts);
+        // Without the reset point 0's marginal is 0 and the run reports [1, 2].
+        assert_eq!(dirty.marginal(0, &[], &pts), 0.0);
+        assert_eq!(greedy_independent_set(&pts, &mut dirty, 0.0, 2), expected);
+    }
 }

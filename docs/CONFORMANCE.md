@@ -110,7 +110,9 @@ citation matters more than an impressive one.
 6. **Exhaustive mode always contains threshold 0**, from the `u == v` pairs
    of `{dist(u,v)/2}` — so with `d_max > 0` the `d = 0` sweep run duplicates
    line 2 and rule 2 relabels it: **`stage == "greedy"` is unreachable under
-   `exhaustive_thresholds`**. The exhaustive set is sorted ascending and
+   `exhaustive_thresholds` when `d_max > 0`**. The qualifier is load-bearing:
+   rule 5 skips the whole sweep at `d_max == 0`, so a degenerate point set
+   reports `"greedy"` (or `"diameter_pair"`) in this mode like any other. The exhaustive set is sorted ascending and
    exactly deduplicated; its ceiling is `d_max/2`. (Case 19 pins only that
    the exhaustive set is used at all: its winning threshold `1.5 =
    dist(6, 9)/2` is not an entry of the geometric grid for `d_max = 8`,
@@ -186,8 +188,15 @@ citation matters more than an impressive one.
     (Cases 8 and 3 respectively.)
 13. **Validation — every one of these is an error, never an empty result.**
     `n == 0` (an empty point matrix) → `EmptyInput`; `k == 0` → `InvalidK`;
-    `eps` outside `0 < eps <= 1` → `InvalidEps` (so `NaN`, `0`, negatives and
-    anything above 1 are rejected; `eps == 1` is accepted); `lambda` not
+    `eps` outside `f32::EPSILON <= eps <= 1` → `InvalidEps` (so `NaN`, `0`,
+    negatives and anything above 1 are rejected; `eps == 1` is accepted). The
+    **lower** bound is a `[divsel choice]` forced by the grid of rule 7: the
+    entries are f32 built by repeated multiplication, so below
+    `f32::EPSILON = 1.1920929e-7` two consecutive entries cannot differ and `|D|`
+    runs away toward the count of representable f32s in the range — below
+    `2^-53`, `1 + eps` is `1` and the loop never advances at all. A port that
+    accepts an arbitrarily small `eps` hangs or dies on the allocator instead of
+    reporting an error; `lambda` not
     finite or `< 0` → `InvalidLambda` (`NaN` and `+inf` rejected); then the
     utility's own checks (weights length `== n`, each weight finite and
     `>= 0`; coverage rows `== n`, ids below the universe). divsel's core
@@ -279,10 +288,11 @@ tolerance absorbs any reasonable summation order.
   `core.autocrlf` active on Windows — the attribute is what keeps the
   checked-out bytes identical everywhere).
 * **Every platform reproduces the committed file's *values***: CI runs both
-  readers (`cargo test --test golden`, `pytest python/tests/test_golden.py`)
-  on Linux, macOS and Windows.
-* **Regeneration** (`python python/tools/gen_golden.py --check`) is
-  byte-identical on the generating machine: inputs are dyadic (Gaussian draws
+  readers on Linux, macOS and Windows — the `golden` job
+  (`cargo test -p divsel --test golden`, one cell per OS) and the `python`
+  matrix (`pytest python/tests/test_golden.py`, 3 OSes x 4 interpreters).
+* **Regeneration** (`python python/tools/gen_golden.py --check`, gated in CI on
+  one cell — Linux, 3.12) is byte-identical on the generating machine: inputs are dyadic (Gaussian draws
   are excluded by design), the random cases use a fixed seed, and floats are
   written with Python `repr` (shortest round-trip). Cross-platform
   regeneration identity is **not** promised — reproducing the *file* is the

@@ -81,15 +81,26 @@ pub struct GistConfig {
     /// Weight `lambda >= 0` of the diversity term in `f(S) = g(S) + lambda *
     /// div(S)`. Must be finite.
     pub lambda: f64,
-    /// Accuracy `eps` of the threshold sweep, in `(0, 1]`. Smaller means more
-    /// thresholds: `|D| = 1 + floor(log_{1+eps}(2/eps))`.
+    /// Accuracy `eps` of the threshold sweep, in `[f32::EPSILON, 1]`. Smaller
+    /// means more thresholds: `|D| = 1 + floor(log_{1+eps}(2/eps))` -- 32 at the
+    /// default `eps = 0.1`. Under [`DiameterMode::Approx`] the ceiling widens to
+    /// `4/eps` (see [`approx_diameter`]), so the count there is
+    /// `1 + floor(log_{1+eps}(4/eps))` -- 39 at the default.
+    ///
+    /// `|D|` grows like `1/eps`, so a tiny `eps` is expensive rather than
+    /// precise: `1e-4` already means about 200 000 greedy runs. Below
+    /// [`f32::EPSILON`] the set is not merely large but ill-defined -- the
+    /// entries are `f32` and consecutive ones can no longer differ -- so that is
+    /// where the range stops, with [`DivselError::InvalidEps`].
     pub eps: f32,
     /// Replace the geometric threshold set with the exhaustive one,
     /// `{dist(u,v)/2 : u,v in V}` — the paper's exact-`2/3` variant for a linear
     /// `g`. Costs `O(n^2)` thresholds; see [`gist`]. The set always contains
-    /// `0` (from `u == v`), so the line-2 greedy run is repeated inside the
-    /// sweep and, by the non-strict fold, [`Stage::Greedy`] is never reported
-    /// in this mode.
+    /// `0` (from `u == v`), so **when `d_max > 0`** the line-2 greedy run is
+    /// repeated inside the sweep and, by the non-strict fold, [`Stage::Greedy`]
+    /// is never reported. A degenerate point set (`d_max == 0`, which includes
+    /// `n == 1`) skips the sweep entirely -- see the note on [`gist`] -- so
+    /// [`Stage::Greedy`] *is* reported there, in this mode like any other.
     pub exhaustive_thresholds: bool,
     /// How `d_max` is obtained.
     pub diameter: DiameterMode,
@@ -162,8 +173,10 @@ pub struct GistResult {
 ///
 /// A `d_max` of `0` collapses every entry to `0.0`; the duplicates are removed,
 /// so the result is `[0.0]` rather than a run of zeros. An `eps` outside
-/// `(0, +inf)` — which [`gist`] rejects before ever calling this — yields an
-/// empty set rather than looping forever.
+/// `[f32::EPSILON, +inf)` — which [`gist`] rejects before ever calling this —
+/// yields an empty set rather than looping forever: below `f32::EPSILON` two
+/// consecutive entries cannot differ once cast to `f32`, and below `2^-53`
+/// `1.0 + eps` is `1.0`, so the loop never advances at all.
 ///
 /// # Examples
 ///
@@ -188,10 +201,12 @@ pub fn thresholds(d_max: f32, eps: f32) -> Vec<f32> {
 fn thresholds_with_bound(d_max: f32, eps: f32, bound: f64) -> Vec<f32> {
     let eps = f64::from(eps);
     let d_max = f64::from(d_max);
-    // `p *= 1 + eps` only grows -- and so only terminates -- for a finite,
-    // strictly positive eps. The driver has already rejected everything else;
-    // this keeps the public entry point from hanging on a hand-written call.
-    if !(eps > 0.0 && eps.is_finite()) {
+    // `p *= 1 + eps` only grows -- and so only terminates -- for a finite eps
+    // that `1.0 + eps` can actually represent, and only separates two f32
+    // entries from `f32::EPSILON` up. The driver has already rejected everything
+    // else; this keeps the public entry point from hanging on a hand-written
+    // call.
+    if !(eps >= f64::from(f32::EPSILON) && eps.is_finite()) {
         return Vec::new();
     }
 
@@ -247,8 +262,16 @@ fn exhaustive_threshold_set(pts: &Points<'_>) -> Vec<f32> {
 ///
 /// # Panics
 ///
-/// Panics if any index in `s` is out of range for `pts`.
+/// Panics if any index in `s` is out of range for `pts`, on **every** return
+/// path -- neither of them is guaranteed to touch the offending index by itself.
 pub fn div(pts: &Points<'_>, s: &[usize]) -> f32 {
+    // The `|S| <= 1` return below reads none of `s`, and `dist(i, i)` short
+    // circuits before any row, so without this check an out-of-range index would
+    // come back as a plausible number in release instead of the documented
+    // panic. `s` holds at most `k` indices against an `O(|S|^2)` scan.
+    if let Some(&bad) = s.iter().find(|&&v| v >= pts.n()) {
+        panic!("div: index {bad} is out of range for {} points", pts.n());
+    }
     if s.len() <= 1 {
         return pts.diameter().0;
     }
@@ -411,7 +434,7 @@ fn farthest_from(pts: &Points<'_>, from: usize) -> usize {
 /// # Errors
 ///
 /// In this order: [`DivselError::InvalidK`] if `cfg.k == 0`;
-/// [`DivselError::InvalidEps`] unless `0 < eps <= 1`;
+/// [`DivselError::InvalidEps`] unless `f32::EPSILON <= eps <= 1`;
 /// [`DivselError::InvalidLambda`] unless `lambda` is finite and non-negative;
 /// then whatever [`Utility::validate`] returns for `pts` — typically
 /// [`DivselError::WeightsLength`].
@@ -445,7 +468,12 @@ pub fn gist(
     if cfg.k == 0 {
         return Err(DivselError::InvalidK);
     }
-    if !(cfg.eps > 0.0 && cfg.eps <= 1.0) {
+    // The floor is what keeps a legal-looking `eps` from hanging: the grid is
+    // built by `p *= 1 + eps` in f64 and cast to f32, so an `eps` below
+    // `f32::EPSILON` cannot separate two consecutive entries -- and one below
+    // `2^-53` does not move `p` at all, which is an unbounded loop pushing into
+    // a `Vec` until the allocator gives up.
+    if !(cfg.eps >= f32::EPSILON && cfg.eps <= 1.0) {
         return Err(DivselError::InvalidEps(cfg.eps));
     }
     if !(cfg.lambda >= 0.0 && cfg.lambda.is_finite()) {
@@ -1628,5 +1656,310 @@ mod tests {
                 "FacilityLocation instance {instance} depends on the rayon split"
             );
         }
+    }
+
+    // ---- (j) contract pins added by the final review ----------------------
+
+    /// Three coincident points, so `d_max == 0` and the sweep is skipped: the
+    /// exhaustive set's `0` entry never runs, and [`Stage::Greedy`] therefore
+    /// **is** reachable under [`GistConfig::exhaustive_thresholds`].
+    ///
+    /// The unreachability of `Stage::Greedy` in that mode holds only for
+    /// `d_max > 0`; a port that encodes it as an unconditional invariant fires on
+    /// every all-identical-embeddings input.
+    #[test]
+    fn exhaustive_thresholds_still_report_greedy_when_d_max_is_zero() {
+        let pts = Points::new(vec![2.0; 6], 2, Metric::Euclidean).expect("coincident points");
+        assert_eq!(pts.n(), 3);
+        let cfg = GistConfig {
+            k: 2,
+            lambda: 1.0,
+            eps: 0.1,
+            exhaustive_thresholds: true,
+            diameter: DiameterMode::Exact,
+        };
+
+        let mut util = Linear::new(vec![3.0, 1.0, 1.0]);
+        let out = gist(&pts, &mut util, &cfg).expect("valid configuration");
+        assert_eq!(out.d_max, 0.0);
+        assert_eq!(out.stage, Stage::Greedy);
+        assert_eq!(out.selected, vec![0, 1]);
+        assert_eq!(out.threshold, 0.0);
+
+        // `n == 1` is the same story, and there the line-5 check cannot fire
+        // either.
+        let one = Points::new(vec![2.0, 2.0], 2, Metric::Euclidean).expect("one point");
+        let mut util = Linear::new(vec![3.0]);
+        let out = gist(&one, &mut util, &cfg).expect("valid configuration");
+        assert_eq!(out.d_max, 0.0);
+        assert_eq!(out.stage, Stage::Greedy);
+        assert_eq!(out.selected, vec![0]);
+    }
+
+    /// [`div`]'s documented panic has to fire on the `|S| <= 1` return path too,
+    /// which returns the diameter without ever reading `s`.
+    #[test]
+    #[should_panic(expected = "out of range")]
+    fn div_rejects_an_out_of_range_index_in_a_singleton() {
+        let pts = line_five();
+        let _ = div(&pts, &[999]);
+    }
+
+    /// And on the `dist(i, i)` short circuit, which returns `0.0` in release
+    /// before touching a row.
+    #[test]
+    #[should_panic(expected = "out of range")]
+    fn div_rejects_an_out_of_range_index_repeated() {
+        let pts = line_five();
+        let _ = div(&pts, &[999, 999]);
+    }
+
+    /// The `4/eps` ceiling [`gist`] passes under [`DiameterMode::Approx`] is
+    /// observable end to end: with `k == 1` every threshold yields the same
+    /// singleton and the same `f`, so the non-strict fold reports the grid's
+    /// **top** entry, which under approx must land above `d_hat`
+    /// (about `1.98*d_hat`) and under exact below `d_max` (about `0.96*d_max`).
+    ///
+    /// A driver that kept the paper's `2/eps` bound under approx would report a
+    /// threshold below `d_hat` here and lose every high-`div` threshold on an
+    /// instance whose `d_hat < d_max`.
+    #[test]
+    fn the_approx_mode_widens_the_sweep_ceiling_past_d_hat() {
+        let pts = line_five();
+        let base = GistConfig {
+            k: 1,
+            lambda: 1.0,
+            eps: 0.1,
+            exhaustive_thresholds: false,
+            diameter: DiameterMode::Exact,
+        };
+
+        let mut util = Linear::uniform(pts.n());
+        let exact = gist(&pts, &mut util, &base).expect("valid configuration");
+        assert_eq!(exact.stage, Stage::Sweep);
+        assert_eq!(exact.d_max, 12.0);
+        assert!(
+            exact.threshold < exact.d_max,
+            "the paper's 2/eps grid tops out below d_max, got {}",
+            exact.threshold
+        );
+        assert_eq!(
+            exact.threshold,
+            *thresholds_with_bound(exact.d_max, base.eps, 20.0)
+                .last()
+                .expect("non-empty grid")
+        );
+
+        let mut util = Linear::uniform(pts.n());
+        let approx = gist(
+            &pts,
+            &mut util,
+            &GistConfig {
+                diameter: DiameterMode::Approx { sweeps: 3 },
+                ..base.clone()
+            },
+        )
+        .expect("valid configuration");
+        assert_eq!(approx.stage, Stage::Sweep);
+        assert!(
+            approx.threshold > approx.d_max,
+            "the 4/eps grid must reach past d_hat = {}, got {}",
+            approx.d_max,
+            approx.threshold
+        );
+        assert_eq!(
+            approx.threshold,
+            *thresholds_with_bound(approx.d_max, base.eps, 40.0)
+                .last()
+                .expect("non-empty grid")
+        );
+    }
+
+    /// `farthest_from` excludes its own source index, which is the only thing
+    /// keeping the approximate-diameter pair distinct when every distance is `0`;
+    /// its ties go to the lowest index.
+    ///
+    /// Without the exclusion the double sweep returns `(0.0, 0, 0)` and [`gist`]
+    /// builds the candidate pair `[0, 0]` -- a repeated index one line-5 win away
+    /// from [`GistResult::selected`]. With ties to the highest index it returns
+    /// `(0.0, 1, 2)`.
+    #[test]
+    fn the_approximate_diameter_pair_stays_distinct_when_every_point_coincides() {
+        let pts = Points::new(vec![2.0; 6], 2, Metric::Euclidean).expect("coincident points");
+        assert_eq!(pts.n(), 3);
+        assert_eq!(pts.diameter(), (0.0, 0, 1));
+        for sweeps in [0, 1, 2, 3] {
+            assert_eq!(
+                approx_diameter(&pts, sweeps),
+                (0.0, 0, 1),
+                "sweeps = {sweeps}"
+            );
+        }
+    }
+
+    /// [`eval_g`] and [`gist`] both hand the utility back in the empty-selection
+    /// state, which is what lets a caller read `g(v | {})` off it afterwards.
+    #[test]
+    fn eval_g_and_gist_return_the_utility_reset() {
+        use crate::utility::Coverage;
+
+        let pts = line_five();
+        let sets = vec![vec![0, 1], vec![2], vec![3], vec![4], vec![5]];
+        let sizes: Vec<f64> = sets.iter().map(|s| s.len() as f64).collect();
+        let fresh = || Coverage::new(sets.clone(), 6).expect("coverage sets");
+
+        let mut util = fresh();
+        assert_eq!(eval_g(&mut util, &[0, 1], &pts), 3.0);
+        for (v, &size) in sizes.iter().enumerate() {
+            assert_eq!(
+                util.marginal(v, &[], &pts),
+                size,
+                "eval_g left `util` holding its own replay at {v}"
+            );
+        }
+
+        let mut util = fresh();
+        let out = gist(
+            &pts,
+            &mut util,
+            &GistConfig {
+                k: 3,
+                lambda: 1.0,
+                ..Default::default()
+            },
+        )
+        .expect("valid configuration");
+        assert!(
+            !out.selected.is_empty(),
+            "an empty selection would leave nothing for a missing reset to hold"
+        );
+        for (v, &size) in sizes.iter().enumerate() {
+            assert_eq!(
+                util.marginal(v, &[], &pts),
+                size,
+                "gist left `util` holding the winning selection at {v}"
+            );
+        }
+    }
+
+    /// `eps == 1` is the top of the documented `(0, 1]` range and is accepted;
+    /// the smallest f32 above it is not.
+    #[test]
+    fn eps_of_exactly_one_is_accepted() {
+        let pts = line_five();
+        let mut util = Linear::uniform(pts.n());
+        let cfg = GistConfig {
+            k: 2,
+            eps: 1.0,
+            ..Default::default()
+        };
+        let out = gist(&pts, &mut util, &cfg).expect("eps == 1 is inside the documented range");
+        // D = {eps*d_max/2, (1+eps)*eps*d_max/2} = {6, 12}.
+        assert_eq!(thresholds(out.d_max, 1.0), vec![6.0, 12.0]);
+
+        let above = GistConfig {
+            eps: 1.0 + f32::EPSILON,
+            ..cfg
+        };
+        assert!(matches!(
+            gist(&pts, &mut util, &above),
+            Err(DivselError::InvalidEps(_))
+        ));
+    }
+
+    /// An `eps` below [`f32::EPSILON`] is **rejected**, not served.
+    ///
+    /// The grid is built by `p *= 1 + eps` in f64 and cast to f32: below
+    /// `f32::EPSILON` two consecutive entries cannot differ, and below `2^-53`
+    /// `1.0 + eps` is exactly `1.0`, so the loop never advances -- an unbounded
+    /// push into a `Vec` that ends when the allocator gives up. A caller reading
+    /// the documented `(0, 1]` range would otherwise hand `1e-30` to a public API
+    /// and lose the process.
+    #[test]
+    fn an_eps_below_the_f32_epsilon_is_rejected() {
+        let pts = line_five();
+        let mut util = Linear::uniform(pts.n());
+        for eps in [1e-30f32, 1e-16, 1e-8, f32::EPSILON / 2.0] {
+            let cfg = GistConfig {
+                k: 2,
+                eps,
+                ..Default::default()
+            };
+            assert!(
+                matches!(gist(&pts, &mut util, &cfg), Err(DivselError::InvalidEps(_))),
+                "eps = {eps} was accepted"
+            );
+            // The public builder cannot be made to hang either.
+            assert!(thresholds(1.0, eps).is_empty(), "eps = {eps}");
+        }
+
+        // `f32::EPSILON` itself is inside the range. Both probes stay cheap on
+        // purpose: at that eps the paper's `2/eps` ceiling would build about
+        // 1.4e8 entries, so the grid is probed with a ceiling of one entry and
+        // the driver on a degenerate point set, which skips the sweep entirely.
+        assert_eq!(thresholds_with_bound(1.0, f32::EPSILON, 1.0).len(), 1);
+        let one = Points::new(vec![1.0, 2.0], 2, Metric::Euclidean).expect("one point");
+        let mut util = Linear::uniform(one.n());
+        let cfg = GistConfig {
+            k: 1,
+            eps: f32::EPSILON,
+            ..Default::default()
+        };
+        let out = gist(&one, &mut util, &cfg).expect("f32::EPSILON is the bottom of the range");
+        assert_eq!(out.selected, vec![0]);
+    }
+
+    /// Line 5 compares **strictly**: a diametrical pair that only *ties* the
+    /// greedy solution must not displace it.
+    ///
+    /// `x = 0, 0.25, -8, 8`, weights `3.96875, 3.96875, 2, 2`, `lambda = 0.25`.
+    /// Greedy takes the two heavy near-duplicates for `7.9375 + 0.25*0.25 = 8`;
+    /// the diametrical pair `{2, 3}` scores `4 + 0.25*16 = 8` -- an **exact** tie,
+    /// every value being dyadic -- and the whole sweep tops out at `7.96875`, so
+    /// no threshold relabels the stage afterwards either. Under a `>=` on line 5
+    /// this reports `[2, 3]` at [`Stage::DiameterPair`].
+    #[test]
+    fn the_diametrical_pair_does_not_displace_a_greedy_it_only_ties() {
+        let pts = Points::new(vec![0.0, 0.25, -8.0, 8.0], 1, Metric::Euclidean).expect("fixture");
+        let mut util = Linear::new(vec![3.96875, 3.96875, 2.0, 2.0]);
+        let cfg = GistConfig {
+            k: 2,
+            lambda: 0.25,
+            eps: 0.1,
+            exhaustive_thresholds: false,
+            diameter: DiameterMode::Exact,
+        };
+
+        let (d_max, u, v) = pts.diameter();
+        assert_eq!((d_max, u, v), (16.0, 2, 3));
+        let f_greedy = f_of(&pts, &mut util, &[0, 1], cfg.lambda, d_max);
+        let f_pair = f_of(&pts, &mut util, &[2, 3], cfg.lambda, d_max);
+        assert_eq!(f_greedy, 8.0);
+        assert_eq!(f_pair, f_greedy, "the fixture no longer ties exactly");
+
+        let out = gist(&pts, &mut util, &cfg).expect("valid configuration");
+        assert_eq!(out.stage, Stage::Greedy);
+        assert_eq!(out.selected, vec![0, 1]);
+        assert_eq!(out.threshold, 0.0);
+        assert_eq!(out.f_value, 8.0);
+    }
+
+    /// `DiameterMode::Approx { sweeps: 0 }` is documented as "treated as 1", all
+    /// the way through the driver and not only inside [`approx_diameter`].
+    #[test]
+    fn zero_diameter_sweeps_are_treated_as_one() {
+        let pts = line_five();
+        let cfg = |sweeps| GistConfig {
+            k: 3,
+            lambda: 0.5,
+            diameter: DiameterMode::Approx { sweeps },
+            ..Default::default()
+        };
+        let mut none = Linear::uniform(pts.n());
+        let mut one = Linear::uniform(pts.n());
+        assert_eq!(
+            gist(&pts, &mut none, &cfg(0)).expect("valid configuration"),
+            gist(&pts, &mut one, &cfg(1)).expect("valid configuration"),
+        );
     }
 }

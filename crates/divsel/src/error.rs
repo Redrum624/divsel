@@ -72,8 +72,13 @@ pub enum DivselError {
     /// The requested subset size `k` was zero. (A `k` above the number of
     /// points is clamped, not rejected.)
     InvalidK,
-    /// The requested epsilon was outside `0 < eps <= 1` (which also rejects
-    /// `NaN` and the infinities).
+    /// The requested epsilon was outside `f32::EPSILON <= eps <= 1` (which also
+    /// rejects `NaN` and the infinities). The lower end is not cosmetic: the
+    /// threshold grid is built by repeated multiplication by `1 + eps` and its
+    /// entries are `f32`, so below `f32::EPSILON` consecutive entries cannot
+    /// differ and `|D|` runs away toward the count of representable `f32`s in
+    /// the range -- for an `eps` below `2^-53` the multiplication does not
+    /// advance at all.
     InvalidEps(f32),
     /// The requested lambda was out of range.
     InvalidLambda(f64),
@@ -119,7 +124,7 @@ impl fmt::Display for DivselError {
             Self::InvalidK => write!(f, "k must be greater than zero"),
             Self::InvalidEps(eps) => write!(
                 f,
-                "epsilon {eps} must be in the range 0 < eps <= 1"
+                "epsilon {eps:e} must be in the range f32::EPSILON (1.1920929e-7) <= eps <= 1"
             ),
             Self::InvalidLambda(lambda) => {
                 write!(f, "lambda {lambda} must be finite and non-negative")
