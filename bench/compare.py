@@ -77,6 +77,9 @@ METHOD_NAMES = (
 )
 # The diameter the shared evaluator would need for |S| <= 1 is an O(n^2) scan; above this n it is skipped.
 EXACT_DIAMETER_MAX_N = 200_000
+# R-G21: facility location is measured at n = 10k only. Its marginal is O(n * dim), so one call at 10k
+# already takes minutes (docs/benchmarks/README.md); the explicit --n path enforces the same ceiling --all does.
+FACILITY_LOCATION_MAX_N = 10_000
 
 
 class Unavailable(Exception):
@@ -290,7 +293,8 @@ METHODS = {
     "gist-sampling[mode=exact]": run_gist_sampling_exact,
     "mmr": run_mmr,
 }
-assert tuple(METHODS) == METHOD_NAMES
+if tuple(METHODS) != METHOD_NAMES:  # not an assert: that would vanish under `python -O`
+    raise RuntimeError(f"METHODS {tuple(METHODS)} and METHOD_NAMES {METHOD_NAMES} disagree")
 
 
 # --------------------------------------------------------------------------------------------------
@@ -444,12 +448,20 @@ def worker(args) -> dict:
     except Exception as exc:  # noqa: BLE001 -- the cell reports the error instead of dying
         result.update(status="error", reason=_first_line(exc))
     if result["status"] in ("ok", "timeout"):
-        score = evaluate(x, w, selected, args.utility)
-        result["selected"] = [int(i) for i in selected]
-        result.update({f"eval_{key}": val for key, val in score.items()})
-        result["library_reported"] = reported
-        if args.method.startswith("divsel") and score["f"] is not None:
-            result["self_check_abs_diff"] = abs(score["f"] - reported["f"])
+        # A selection the evaluator rejects (duplicate indices, an index out of range) is the
+        # library's defect and is reported as this cell's error, not as a driver crash.
+        try:
+            score = evaluate(x, w, selected, args.utility)
+        except Exception as exc:  # noqa: BLE001
+            result.update(status="error", reason=f"evaluate: {_first_line(exc)}")
+            result["selected"] = [int(i) for i in selected]
+            result["library_reported"] = reported
+        else:
+            result["selected"] = [int(i) for i in selected]
+            result.update({f"eval_{key}": val for key, val in score.items()})
+            result["library_reported"] = reported
+            if args.method.startswith("divsel") and score["f"] is not None:
+                result["self_check_abs_diff"] = abs(score["f"] - reported["f"])
     result["peak_rss_mib"] = peak_rss_mib()
     return result
 
@@ -497,8 +509,15 @@ def run_cell(method: str, n: int, dim: int, k: int, utility: str, args, diameter
             "reason": f"worker exit {proc.returncode}: {err[-1] if err else '(no stderr)'}",
             "worker_wall_s": elapsed,
         }
-    line = [ln for ln in proc.stdout.splitlines() if ln.startswith("{")][-1]
-    out = json.loads(line)
+    lines = [ln for ln in proc.stdout.splitlines() if ln.startswith("{")]
+    if not lines:
+        return {
+            **base,
+            "status": "error",
+            "reason": "worker exited 0 without printing a JSON result line",
+            "worker_wall_s": elapsed,
+        }
+    out = json.loads(lines[-1])
     out["worker_wall_s"] = elapsed
     return out
 
@@ -518,6 +537,13 @@ def cells_for(args) -> list[tuple[int, int, int, str, str]]:
                     cells.append((1_000_000, d, k, "linear", "approx"))
         return cells
     utilities = UTILITIES if args.utility == "both" else (args.utility,)
+    too_large = [n for n in args.n if n > FACILITY_LOCATION_MAX_N]
+    if "facility_location" in utilities and too_large:
+        raise SystemExit(
+            f"facility_location is limited to n <= {FACILITY_LOCATION_MAX_N} (R-G21; --all applies the "
+            f"same ceiling, and --large adds n = 1M for divsel Linear only), got --n {too_large}; "
+            f"pass --utility linear for those n"
+        )
     for n in args.n:
         for d in args.dim:
             for k in args.k:
@@ -633,20 +659,24 @@ def main(argv=None) -> int:
         print(f"unknown methods: {unknown}; known: {list(METHODS)}", file=sys.stderr)
         return 2
     meta = environment()
-    meta.update(runs=args.runs, timeout_s=args.timeout, argv=sys.argv[1:])
-    print(json.dumps(meta, indent=1), file=sys.stderr)
+    meta.update(runs=args.runs, timeout_s=args.timeout)
+    # The invocation is recorded on every cell, not in `meta`: `--out` merges cell by cell across
+    # invocations, so a document-level argv could only ever describe the last one.
+    argv = sys.argv[1:]
+    print(json.dumps({**meta, "argv": argv}, indent=1), file=sys.stderr)
     results = []
     for n, dim, k, utility, diameter in cells_for(args):
         for method in methods:
             if n >= 1_000_000 and method != "divsel":
                 results.append(
                     {"n": n, "dim": dim, "k": k, "utility": utility, "method": method, "status": "not run",
-                     "reason": "n = 1M is run for divsel only (R-G21)"}
+                     "reason": "n = 1M is run for divsel only (R-G21)", "argv": argv}
                 )
                 continue
             print(f"[{_dt.datetime.now():%H:%M:%S}] n={n} dim={dim} k={k} {utility} {method} ...",
                   file=sys.stderr, flush=True)
             r = run_cell(method, n, dim, k, utility, args, diameter)
+            r["argv"] = argv
             results.append(r)
             summary = (
                 f"{r['wall_median_s']:.3f} s, f={r['eval_f']}" if r["status"] == "ok" else f"{r['status']}: {r.get('reason')}"
