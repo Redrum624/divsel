@@ -666,16 +666,30 @@ def main(argv=None) -> int:
     print(json.dumps({**meta, "argv": argv}, indent=1), file=sys.stderr)
     results = []
     for n, dim, k, utility, diameter in cells_for(args):
+        ran = set()
         for method in methods:
-            if n >= 1_000_000 and method != "divsel":
-                results.append(
-                    {"n": n, "dim": dim, "k": k, "utility": utility, "method": method, "status": "not run",
-                     "reason": "n = 1M is run for divsel only (R-G21)", "argv": argv}
-                )
-                continue
-            print(f"[{_dt.datetime.now():%H:%M:%S}] n={n} dim={dim} k={k} {utility} {method} ...",
+            # `cells_for` forces diameter="approx" at n >= 1M (R-G21), so a row
+            # labelled plain `divsel` there would name a configuration that did
+            # not run. Both divsel spellings resolve to the one cell that does,
+            # and it is labelled for what it ran -- which is also what makes
+            # `--methods "divsel[diameter=approx]"` return that cell instead of
+            # "not run". Below 1M nothing is rewritten: the two divsel rows are
+            # genuinely different measurements there.
+            effective = method
+            if n >= 1_000_000:
+                if method not in ("divsel", "divsel[diameter=approx]"):
+                    results.append(
+                        {"n": n, "dim": dim, "k": k, "utility": utility, "method": method, "status": "not run",
+                         "reason": "n = 1M is run for divsel only (R-G21)", "argv": argv}
+                    )
+                    continue
+                effective = "divsel[diameter=approx]"
+                if effective in ran:
+                    continue
+                ran.add(effective)
+            print(f"[{_dt.datetime.now():%H:%M:%S}] n={n} dim={dim} k={k} {utility} {effective} ...",
                   file=sys.stderr, flush=True)
-            r = run_cell(method, n, dim, k, utility, args, diameter)
+            r = run_cell(effective, n, dim, k, utility, args, diameter)
             r["argv"] = argv
             results.append(r)
             summary = (

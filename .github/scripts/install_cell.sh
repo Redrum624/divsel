@@ -16,6 +16,11 @@ PY_FULL="$(python -c 'import sys, platform; print(sys.version.split()[0], platfo
 VENV="venv-$LIB"
 rm -rf "$VENV"
 python -m venv "$VENV"
+# The venv is scratch, and it is created in the checkout root -- where the divsel
+# cell then runs `pip install .`. Remove it on the way out however this exits, so
+# a local run does not leave four of them (hundreds of MB) behind, and so no cell
+# builds a source tree with another cell's venv sitting in it.
+trap 'rm -rf "$VENV"' EXIT
 if [ -x "$VENV/Scripts/python.exe" ]; then VPY="$VENV/Scripts/python.exe"; else VPY="$VENV/bin/python"; fi
 "$VPY" -m pip install --upgrade pip > /dev/null 2>&1 || true
 

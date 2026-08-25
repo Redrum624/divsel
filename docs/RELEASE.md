@@ -79,7 +79,18 @@ fills for Linux/macOS, and paste the assembled table into `docs/benchmarks/READM
 
 ---
 
-## Already verified locally (2026-08-22, Windows 11 x64, this checkout at 0.1.0)
+## Verification log
+
+> **The entries below are dated and pinned to a commit. They are evidence for
+> *that* tree, not for whatever HEAD is now.** Anything built from source —
+> everything under `wheels/` in particular — is a build artifact, never proof
+> about a later commit: check `git log <sha>..HEAD` before reusing an entry, and
+> re-run steps 1-3 at the commit you are actually tagging. As of the last update
+> to this file the wheels in `wheels/` were built on 2026-08-22 at 14:11-14:18
+> and are **older than** the golden fixture, `docs/CONFORMANCE.md`, the cleanup
+> wave and the final-review fixes, so they do not describe HEAD.
+
+### 2026-08-22, Windows 11 x64, at the 0.1.0 tree of that date
 
 - `cargo test` (workspace), `cargo clippy --all-targets --all-features -- -D warnings`,
   `cargo fmt --check`, `RUSTDOCFLAGS="-D warnings" cargo doc --no-deps`: green.
@@ -97,6 +108,24 @@ fills for Linux/macOS, and paste the assembled table into `docs/benchmarks/READM
 
 What could **not** be verified locally: Linux/macOS wheel builds (CI-only), the actual
 PyPI/crates.io uploads, and the Trusted Publishing round-trip — that is what steps 1–7 close.
+
+### 2026-08-25, Windows 11 x64, final-review fixes
+
+- `cargo test --workspace`, `cargo clippy --workspace --all-targets --all-features
+  -- -D warnings`, `cargo fmt --all --check`, `RUSTDOCFLAGS="-D warnings" cargo doc
+  --no-deps`: green.
+- `pytest python/tests -q` in both local venvs (3.14.2 GIL, and the adapter venv
+  with langchain-core + llama-index-core): green.
+- `python python/tools/gen_golden.py --check`: byte-identical.
+- `cargo package -p divsel` + `cargo test --test golden` from the unpacked
+  `target/package/divsel-0.1.0/`: the crate now carries `LICENSE`, and the golden
+  reader reports a named skip there instead of panicking (the fixture lives at the
+  workspace root, which `cargo package` cannot reach).
+- `python -m maturin sdist`: the sdist now carries `test-assets/golden-selection.json`
+  and `python/tests/**`, so both readers run from an unpacked source distribution.
+- **Not** re-run at this commit: the per-interpreter wheel installs (3.11-3.14 and
+  3.14t) and the `cargo publish --dry-run`. Those are step 3's job at the release
+  commit.
 
 ## Regenerating release.yml
 

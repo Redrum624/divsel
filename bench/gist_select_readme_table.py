@@ -31,11 +31,37 @@ ROWS = [  # (n, d, k, README time)
 ]
 
 
+def parse_rows(spec: str) -> list[int]:
+    """1-based row numbers, validated.
+
+    Unvalidated, ``--rows 0`` indexed ``ROWS[-1]`` and silently ran the
+    2,000,000-point row (about 1 GB of float32 and 17 minutes) for a caller who
+    asked for nothing, and a non-integer died with a bare ``ValueError``.
+    """
+    rows = []
+    for token in spec.split(","):
+        token = token.strip()
+        if not token:
+            raise SystemExit(f"--rows: empty entry in {spec!r}; rows are 1..{len(ROWS)}")
+        try:
+            idx = int(token)
+        except ValueError:
+            raise SystemExit(f"--rows: {token!r} is not an integer; rows are 1..{len(ROWS)}") from None
+        if not 1 <= idx <= len(ROWS):
+            raise SystemExit(f"--rows: row {idx} is out of range; rows are 1..{len(ROWS)}")
+        rows.append(idx)
+    if not rows:
+        raise SystemExit(f"--rows: nothing selected; rows are 1..{len(ROWS)}")
+    return rows
+
+
 def main() -> int:
     p = argparse.ArgumentParser()
-    p.add_argument("--rows", default="1,2,3,4")
+    p.add_argument("--rows", default="1,2,3,4",
+                   help=f"comma-separated 1-based row numbers, 1..{len(ROWS)}")
     p.add_argument("--n-jobs", type=int, default=1)
     args = p.parse_args()
+    rows = parse_rows(args.rows)
     from gist import EuclideanDistance, LinearUtility, gist
 
     import gist as gist_pkg
@@ -43,7 +69,7 @@ def main() -> int:
 
     print(f"python {sys.version.split()[0]}, numpy {np.__version__}, gist-select {md.version('gist-select')} "
           f"from {gist_pkg.__file__}", flush=True)
-    for idx in [int(t) for t in args.rows.split(",")]:
+    for idx in rows:
         n, d, k, claimed = ROWS[idx - 1]
         rng = np.random.default_rng(42)
         t0 = time.perf_counter()

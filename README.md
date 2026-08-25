@@ -1,10 +1,10 @@
 # divsel
 
-**Diverse subset selection that actually has a guarantee.** A native (Rust) implementation of **GIST** — max-min diversification with submodular utility — with Python bindings that are zero-copy for euclidean input (cosine makes exactly one L2-normalised copy).
+**Diverse subset selection that actually has a guarantee.** A native (Rust) implementation of **GIST** — max-min diversification with submodular utility — with Python bindings that are zero-copy for `metric="euclidean"` (the default, `metric="cosine"`, makes exactly one L2-normalised copy).
 
 > Status: **0.1.0 — release candidate; publish pending.** Everything below is built and
-> tested; the crates.io / PyPI publish steps are listed in [`docs/RELEASE.md`](docs/RELEASE.md).
-> Changes: [`CHANGELOG.md`](CHANGELOG.md).
+> tested; the crates.io / PyPI publish steps are listed in [`docs/RELEASE.md`](https://github.com/Redrum624/divsel/blob/main/docs/RELEASE.md).
+> Changes: [`CHANGELOG.md`](https://github.com/Redrum624/divsel/blob/main/CHANGELOG.md).
 
 ## Install
 
@@ -28,7 +28,19 @@ vectors = np.random.default_rng(0).standard_normal((50, 8), dtype=np.float32)
 picked = divsel.gist_select(vectors, k=5, lam=1.0)      # diverse-but-relevant row indices
 full = divsel.gist_select_full(vectors, k=5, lam=1.0)   # + objective, diversity, threshold, stage
 print(picked, full["f_value"])
+
+# The default is metric="cosine": rows are L2-normalised into one copy, and the
+# (1/2 - eps) and (2/3 - eps) bounds are proven for a true metric, so raw cosine
+# distance (the paper's own experimental setting) is a well-behaved heuristic.
+# metric="euclidean" is the zero-copy path, and the one the proofs cover:
+picked = divsel.gist_select(vectors, k=5, lam=1.0, metric="euclidean")
 ```
+
+`gist_select` runs on rayon's process-global thread pool (sized from
+`RAYON_NUM_THREADS`, built on the first call, never shut down). On Linux, forking
+after a first call — `multiprocessing` with the default `fork` start method —
+leaves the child with a pool whose workers do not exist; use `spawn`/`forkserver`,
+or make the first call inside each child.
 
 ## The problem
 
@@ -50,7 +62,7 @@ where `g` is any monotone submodular utility (relevance, coverage, facility loca
 - The two Python implementations are a 1-commit release with **no LICENSE file in its repository** (the PyPI wheel does carry one) and a 6-commit repo that was never published to PyPI.
 - `submodlib` (131★) implements no combined `g(S) + λ·div(S)` objective at all, has had no release since 0.0.3 (PyPI upload 2025-05-14), and ships **no Windows wheels and no sdist** — you cannot install it on Windows, or on Python 3.13/3.14, at any price.
 
-So `divsel` aims at three things nobody currently offers together: **a real license, wheels that install everywhere, and benchmarks you can reproduce from the repo.** The measurements behind these claims — the installability matrix (Windows measured; the 32 Linux/macOS cells pending the CI run; the abi3 wheel does not cover free-threaded 3.14t), the comparison against `gist-select`, `gist-sampling` and MMR, and the incumbents' own README numbers re-run — are in [`docs/benchmarks/README.md`](docs/benchmarks/README.md), produced by `bench/compare.py`.
+So `divsel` aims at three things nobody currently offers together: **a real license, wheels that install everywhere, and benchmarks you can reproduce from the repo.** The measurements behind these claims — the installability matrix (Windows measured; the 32 Linux/macOS cells pending the CI run; the abi3 wheel does not cover free-threaded 3.14t), the comparison against `gist-select`, `gist-sampling` and MMR, and the incumbents' own README numbers re-run — are in [`docs/benchmarks/README.md`](https://github.com/Redrum624/divsel/blob/main/docs/benchmarks/README.md), produced by `bench/compare.py`.
 
 ## Design commitments
 

@@ -1,3 +1,9 @@
 # The golden fixture is a byte-exact cross-language contract: no EOL
 # conversion, ever (core.autocrlf must not rewrite it on any platform).
 test-assets/*.json -text
+
+# Shell scripts are run through bash on the Windows CI cell and locally, where a
+# CRLF checkout (this repo runs with core.autocrlf=true) makes every line end in
+# a stray \r: `$'\r': command not found`. The fixture attribute above guards the
+# bytes of one file; this guards the ones that are executed.
+*.sh text eol=lf
