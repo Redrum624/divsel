@@ -3,7 +3,7 @@
 //! GIST's selling point is not that it returns a good set — every heuristic
 //! claims that — it is that the set it returns is provably within a constant
 //! factor of the exhaustive optimum. This file is the evidence. For 500 seeded
-//! random instances small enough to solve exactly (`n <= 16`, `k <= 4`) it
+//! random instances small enough to solve exactly (`n <= 16`, `2 <= k <= 4`) it
 //! computes `OPT = max_{|S| <= k} f(S)` by enumerating **every** subset, runs
 //! [`gist`] on the same instance, and checks the ratio against the paper's three
 //! bounds (arXiv:2405.18754v3):
@@ -161,10 +161,14 @@ fn threshold_label(exhaustive: bool) -> &'static str {
 /// seed always yields the same instance. `index` (not the seed) drives the two
 /// deterministic cycles: the utility alternates `Linear` / `FacilityLocation`,
 /// and `lambda` cycles through `LAMBDAS`.
+///
+/// `k = 1` is left out of the draw on purpose: the diametrical pair and the
+/// sweep are both no-ops there, so such an instance would test the bound
+/// against nothing but line 2.
 fn build_case(index: usize, seed: u64, metric: Metric) -> Case {
     let mut rng = SplitMix64(seed);
     let n = 4 + rng.below(13); // n in [4, 16]
-    let k = (1 + rng.below(4)).min(n); // k in [1, 4], and never above n
+    let k = (2 + rng.below(3)).min(n); // k in [2, 4]; n >= 4, so `min` never binds
     let dim = if rng.below(2) == 0 { 2 } else { 8 };
     let data = rng.gaussian_points(n, dim);
     let weights = rng.uniform_weights(n);
@@ -420,7 +424,8 @@ fn theorem_3_1_submodular_half_minus_eps() {
         tally.record(case, false, &out);
     }
 
-    assert!(tally.checked > 0, "no submodular instances were generated");
+    // The utility alternates by index, so exactly half the instances are here.
+    assert_eq!(tally.checked, INSTANCES / 2);
     tally.report("Theorem 3.1 (submodular, geometric)", SUBMODULAR_BOUND);
 }
 
@@ -446,7 +451,7 @@ fn theorem_3_3_linear_two_thirds_minus_eps() {
         tally.record(case, false, &out);
     }
 
-    assert!(tally.checked > 0, "no linear instances were generated");
+    assert_eq!(tally.checked, INSTANCES / 2);
     tally.report("Theorem 3.3 (linear, geometric)", LINEAR_BOUND);
 }
 
@@ -473,7 +478,7 @@ fn theorem_3_3_linear_exact_two_thirds_with_exhaustive_thresholds() {
         tally.record(case, true, &out);
     }
 
-    assert!(tally.checked > 0, "no linear instances were generated");
+    assert_eq!(tally.checked, INSTANCES / 2);
     tally.report("Theorem 3.3 (linear, exhaustive)", LINEAR_EXACT_BOUND);
 }
 
