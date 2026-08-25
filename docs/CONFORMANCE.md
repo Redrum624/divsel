@@ -66,7 +66,9 @@ those rules are documented choices a port takes on trust, and an honest
 citation matters more than an impressive one.
 
 1. **Greedy argmax ties → lowest index.** Whenever two candidates have equal
-   marginal gain, the smaller index wins. (Cases 10, 18.)
+   marginal gain, the smaller index wins. (Cases 10 and 18 are built around
+   it; measured, a highest-index rule also fails cases 1, 2, 3, 8, 9, 12 and
+   17 — nine of the 22.)
 2. **Sweep fold: ascending `d`, non-strict `>=`.** Line 8 iterates a *set*;
    divsel folds the thresholds in ascending order and line 10 compares `>=`,
    so **the largest threshold attaining the best `f` wins** — including a tie
@@ -190,7 +192,10 @@ citation matters more than an impressive one.
     utility's own checks (weights length `== n`, each weight finite and
     `>= 0`; coverage rows `== n`, ids below the universe). divsel's core
     checks `k`, `eps`, `lambda`, then the utility; the Python binding raises
-    `ValueError` for all of them, the empty matrix included. (No fixture
+    `ValueError` for all of them, the empty matrix included, and additionally
+    rejects a `bool` `k` with `TypeError` (Python's `True` would otherwise pass
+    as `1`) — a binding-level choice, since the core's `k` is a plain
+    `usize`. (No fixture
     exercises an error — every case is a valid input — so a port must reject
     these on its own.)
 14. **Cosine rows are L2-normalised on construction**; a row that cannot be

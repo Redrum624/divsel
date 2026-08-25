@@ -8,7 +8,7 @@ dynamic = ["version"]
 requires-python = ">=3.11"
 license = "Apache-2.0"
 readme = "README.md"
-description = "GIST max-min diversification with submodular utility (NeurIPS 2025) — native Rust core, zero-copy numpy bindings"
+description = "GIST max-min diversification with submodular utility (NeurIPS 2025) — native Rust core, numpy bindings (zero-copy for euclidean input)"
 classifiers = ["Programming Language :: Rust"]
 dependencies = ["numpy>=1.26"]
 
