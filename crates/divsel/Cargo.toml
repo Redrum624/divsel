@@ -7,6 +7,12 @@ rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 readme = "../../README.md"
+# The Apache-2.0 text is carried inside the package as well as at the repo root:
+# `include`/`readme` aside, cargo cannot reach a file outside the package root, so
+# without this copy the published .crate would ship the SPDX field and no license
+# text at all. `cmp LICENSE crates/divsel/LICENSE` in CI keeps the two identical
+# (`license-file = "../../LICENSE"` also works, but makes cargo warn at publish
+# time that only one of license/license-file is necessary).
 keywords = ["submodular", "diversification", "gist", "mmr", "retrieval"]
 categories = ["algorithms", "science"]
 

@@ -173,16 +173,48 @@ fn check_case(case: &Case, rel: f64) -> Vec<String> {
     problems
 }
 
+/// The fixture lives at the workspace root, which is **outside** this package:
+/// `cargo package` cannot reach it (`include` paths may not escape the package
+/// root), so the published `.crate` ships this reader without its contract file.
+///
+/// Returns the fixture text, or `None` when the file is genuinely unreachable —
+/// a registry checkout, a vendored copy, an unpacked `target/package` tree. In
+/// **this workspace** it is never `None`: the sibling generator
+/// `python/tools/gen_golden.py` is the marker for "the checkout that owns the
+/// fixture", and when that is present a missing fixture is a hard failure, not a
+/// skip. CI runs from the checkout, so the contract stays gated there.
+fn fixture_text() -> Option<String> {
+    const PATH: &str = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../test-assets/golden-selection.json"
+    );
+    const GENERATOR: &str = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../python/tools/gen_golden.py"
+    );
+    match std::fs::read_to_string(PATH) {
+        Ok(text) => Some(text),
+        Err(e) if std::path::Path::new(GENERATOR).exists() => {
+            panic!("cannot read the golden fixture file {PATH}: {e}")
+        }
+        Err(_) => None,
+    }
+}
+
 /// Every case is checked; the failures are collected and reported together,
 /// so one broken case never hides the others.
 #[test]
 fn divsel_reproduces_the_golden_fixtures() {
-    let path = concat!(
-        env!("CARGO_MANIFEST_DIR"),
-        "/../../test-assets/golden-selection.json"
-    );
-    let text = std::fs::read_to_string(path)
-        .unwrap_or_else(|e| panic!("cannot read the golden fixture file {path}: {e}"));
+    let Some(text) = fixture_text() else {
+        // Not a silent pass: say which file is missing and where it lives.
+        println!(
+            "skipped: test-assets/golden-selection.json is not part of the published crate \
+             (it sits at the workspace root, outside this package). Run this test from a \
+             checkout of {}, or fetch the fixture from there.",
+            env!("CARGO_PKG_REPOSITORY")
+        );
+        return;
+    };
     let golden: Golden = serde_json::from_str(&text).expect("golden-selection.json parses");
 
     assert_eq!(golden.schema, 1, "unknown golden schema version");

@@ -12,6 +12,15 @@ description = "GIST max-min diversification with submodular utility (NeurIPS 202
 classifiers = ["Programming Language :: Rust"]
 dependencies = ["numpy>=1.26"]
 
+# Without these the PyPI project page has no Homepage/Source link at all. The
+# README is the long description and PyPI does not rewrite relative links, so the
+# links inside it are absolute for the same reason.
+[project.urls]
+Homepage = "https://github.com/Redrum624/divsel"
+Source = "https://github.com/Redrum624/divsel"
+Changelog = "https://github.com/Redrum624/divsel/blob/main/CHANGELOG.md"
+Issues = "https://github.com/Redrum624/divsel/issues"
+
 [project.optional-dependencies]
 langchain  = ["langchain-core>=1.0"]
 llamaindex = ["llama-index-core>=0.12"]
@@ -26,7 +35,17 @@ python-source = "python"
 # maturin 1.14.1 writes `License-File: LICENSE` into the sdist's PKG-INFO but does
 # not add the file itself (the wheel does get dist-info/licenses/LICENSE); include
 # it explicitly so the sdist metadata is not dangling.
-include = [{ path = "LICENSE", format = "sdist" }]
+#
+# The sdist also ships the workspace crates' `tests/`, and `testpaths` below names
+# `python/tests`, so the two things those tests read have to travel with them: the
+# golden fixture (crates/divsel/tests/golden.rs and python/tests/test_golden.py
+# both resolve it) and the Python test suite itself. Without them `cargo test` /
+# `pytest` from an unpacked sdist fail on missing files rather than running.
+include = [
+    { path = "LICENSE", format = "sdist" },
+    { path = "test-assets/golden-selection.json", format = "sdist" },
+    { path = "python/tests/**/*.py", format = "sdist" },
+]
 
 [tool.maturin.generate-ci.github]
 trusted-publishing = true
