@@ -88,10 +88,16 @@ pub struct GistConfig {
     /// `1 + floor(log_{1+eps}(4/eps))` -- 39 at the default.
     ///
     /// `|D|` grows like `1/eps`, so a tiny `eps` is expensive rather than
-    /// precise: `1e-4` already means about 200 000 greedy runs. Below
-    /// [`f32::EPSILON`] the set is not merely large but ill-defined -- the
+    /// precise: `1e-4` already means 99 040 thresholds, and one greedy run each.
+    /// Below [`f32::EPSILON`] the set is not merely large but ill-defined -- the
     /// entries are `f32` and consecutive ones can no longer differ -- so that is
     /// where the range stops, with [`DivselError::InvalidEps`].
+    ///
+    /// That floor is a **representability** bound, not a resource one, and the
+    /// bottom of the range is not cheap: at `eps = f32::EPSILON` the grid is
+    /// 139 548 968 entries -- about 560 MB of `f32` before dedup, and that many
+    /// greedy runs. Nothing here caps `|D|`; keeping a run affordable is the
+    /// caller's choice of `eps`.
     pub eps: f32,
     /// Replace the geometric threshold set with the exhaustive one,
     /// `{dist(u,v)/2 : u,v in V}` — the paper's exact-`2/3` variant for a linear
@@ -256,9 +262,12 @@ fn exhaustive_threshold_set(pts: &Points<'_>) -> Vec<f32> {
 /// (Sec. 2), and the reason for it is that it makes `div` monotone decreasing in
 /// `S`, which the analysis relies on.
 ///
-/// Computing that fallback costs a full `O(n^2)` diameter scan, so this function
-/// is `O(n^2 * dim)` in the worst case even for a two-element `s`. [`gist`]
-/// computes `d_max` once and never pays it again.
+/// The expensive path is the **`|S| <= 1`** one, not the general one: that
+/// fallback runs a full `O(n^2 * dim)` diameter scan, while `|S| >= 2` never
+/// reaches it and costs `O(|S|^2 * dim)` — the pairwise minimum over `s` alone.
+/// Both pay the `O(|S|)` range check below. So a two-element call is cheap and a
+/// one-element call is not; [`gist`] computes `d_max` once and never pays it
+/// again, on either path.
 ///
 /// # Panics
 ///
@@ -468,11 +477,14 @@ pub fn gist(
     if cfg.k == 0 {
         return Err(DivselError::InvalidK);
     }
-    // The floor is what keeps a legal-looking `eps` from hanging: the grid is
-    // built by `p *= 1 + eps` in f64 and cast to f32, so an `eps` below
-    // `f32::EPSILON` cannot separate two consecutive entries -- and one below
-    // `2^-53` does not move `p` at all, which is an unbounded loop pushing into
-    // a `Vec` until the allocator gives up.
+    // The floor is a representability bound, and only that: the grid is built by
+    // `p *= 1 + eps` in f64 and cast to f32, so an `eps` below `f32::EPSILON`
+    // cannot separate two consecutive entries -- and one below `2^-53` does not
+    // move `p` at all, which is an unbounded loop pushing into a `Vec` until the
+    // allocator gives up. It removes that non-terminating arm; it does not make
+    // the bottom of the range affordable. At `f32::EPSILON` itself the `2/eps`
+    // ceiling still builds 139 548 968 entries, about 560 MB, and one greedy run
+    // each -- `GistConfig::eps` documents that cost rather than capping it.
     if !(cfg.eps >= f32::EPSILON && cfg.eps <= 1.0) {
         return Err(DivselError::InvalidEps(cfg.eps));
     }
@@ -724,6 +736,172 @@ mod tests {
         for s in [&[][..], &[3][..], &[0, 2, 4][..], &[2, 3, 4][..]] {
             assert_eq!(div_with_dmax(&pts, s, d_max), div(&pts, s), "for {s:?}");
         }
+    }
+
+    /// Four points whose double sweep **underestimates** the diameter on its
+    /// first pass: `(0,0)`, `(10,0)`, `(-1,9)`, `(-1,-9)`.
+    ///
+    /// The exact diameter is `dist(2, 3) = 18`. A sweep starting at `0` walks to
+    /// `1` (the farthest at `10`, against `9.055` for the two arms) and then to
+    /// `2`, reporting `d_hat = 14.21267` — inside `[d_max/2, d_max]` but not
+    /// equal to it, which is what [`DiameterMode::Approx`] has to be tested on.
+    /// A second sweep starts from `2` and does find `18`.
+    fn skew_four() -> Points<'static> {
+        Points::new(
+            vec![0.0, 0.0, 10.0, 0.0, -1.0, 9.0, -1.0, -9.0],
+            2,
+            Metric::Euclidean,
+        )
+        .expect("skew fixture")
+    }
+
+    /// `div(S)` for `|S| <= 1` is the driver's `d_max`, which under
+    /// [`DiameterMode::Approx`] is `d_hat` — **not** the true diameter.
+    ///
+    /// `docs/CONFORMANCE.md` rule 10 states this and says outright that no
+    /// fixture pins it; the fixtures cannot, because every approx case there has
+    /// `d_hat == d_max`. On [`skew_four`] the two differ, so a port that reached
+    /// for the exact diameter in the `|S| <= 1` fallback reports `19.0` here
+    /// instead of `15.21267`.
+    #[test]
+    fn div_of_a_singleton_is_d_hat_under_approx_not_the_true_diameter() {
+        let pts = skew_four();
+        assert_eq!(pts.diameter(), (18.0, 2, 3));
+        let (d_hat, u, v) = approx_diameter(&pts, 1);
+        assert_eq!((d_hat, u, v), (14.21267, 1, 2));
+
+        let mut util = Linear::uniform(pts.n());
+        let out = gist(
+            &pts,
+            &mut util,
+            &GistConfig {
+                k: 1,
+                lambda: 1.0,
+                eps: 0.1,
+                exhaustive_thresholds: false,
+                diameter: DiameterMode::Approx { sweeps: 1 },
+            },
+        )
+        .expect("valid configuration");
+        assert_eq!(out.selected, vec![0]);
+        assert_eq!(out.d_max, d_hat);
+        // The singleton's div is d_hat, so f = 1.0 + 1.0 * 14.21267.
+        assert_eq!(out.div, d_hat);
+        assert_eq!(out.f_value, 1.0 + f64::from(d_hat));
+        // The exact-diameter run on the same points is the contrast.
+        let mut util = Linear::uniform(pts.n());
+        let exact = gist(
+            &pts,
+            &mut util,
+            &GistConfig {
+                k: 1,
+                lambda: 1.0,
+                eps: 0.1,
+                exhaustive_thresholds: false,
+                diameter: DiameterMode::Exact,
+            },
+        )
+        .expect("valid configuration");
+        assert_eq!(exact.div, 18.0);
+    }
+
+    /// `exhaustive_thresholds` together with [`DiameterMode::Approx`] — a legal
+    /// combination no other test and no golden case constructs.
+    ///
+    /// The two halves disagree on purpose and the driver does not reconcile them:
+    /// the exhaustive set is built from **exact** pair distances, so its ceiling
+    /// is `exact_d_max / 2 = 9`, while `div`, `d_max` and the reported threshold
+    /// are all measured against `d_hat = 14.21267`. The visible consequence is
+    /// that the winning threshold sits *below* the reported `d_max`, where the
+    /// geometric grid under approx reaches `~2*d_hat` above it.
+    #[test]
+    fn the_exhaustive_set_under_approx_is_built_from_the_exact_distances() {
+        let pts = skew_four();
+        let (d_hat, _, _) = approx_diameter(&pts, 1);
+        let base = GistConfig {
+            k: 1,
+            lambda: 1.0,
+            eps: 0.1,
+            exhaustive_thresholds: true,
+            diameter: DiameterMode::Approx { sweeps: 1 },
+        };
+
+        let mut util = Linear::uniform(pts.n());
+        let out = gist(&pts, &mut util, &base).expect("valid configuration");
+        assert_eq!(out.stage, Stage::Sweep);
+        assert_eq!(out.d_max, d_hat);
+        // The top of `{dist(u,v)/2}` is the *exact* diameter halved.
+        assert_eq!(out.threshold, 9.0);
+        assert_eq!(
+            out.threshold,
+            *exhaustive_threshold_set(&pts).last().expect("non-empty")
+        );
+        assert!(
+            out.threshold < out.d_max,
+            "the exhaustive ceiling is exact_d_max/2, below d_hat"
+        );
+
+        // The same configuration without `exhaustive_thresholds` runs the 4/eps
+        // geometric grid instead, which tops out above d_hat.
+        let mut util = Linear::uniform(pts.n());
+        let geometric = gist(
+            &pts,
+            &mut util,
+            &GistConfig {
+                exhaustive_thresholds: false,
+                ..base.clone()
+            },
+        )
+        .expect("valid configuration");
+        assert!(geometric.threshold > geometric.d_max);
+
+        // And at k = 2 the pair the run returns is the d_hat pair, not the
+        // diametrical one an exact run would find.
+        let mut util = Linear::uniform(pts.n());
+        let pair = gist(
+            &pts,
+            &mut util,
+            &GistConfig {
+                k: 2,
+                ..base.clone()
+            },
+        )
+        .expect("valid configuration");
+        assert_eq!(pair.selected, vec![1, 2]);
+        assert_eq!(pair.stage, Stage::DiameterPair);
+        let mut util = Linear::uniform(pts.n());
+        let exact_pair = gist(
+            &pts,
+            &mut util,
+            &GistConfig {
+                k: 2,
+                diameter: DiameterMode::Exact,
+                ..base
+            },
+        )
+        .expect("valid configuration");
+        assert_eq!(exact_pair.selected, vec![2, 3]);
+        assert_eq!(exact_pair.div, 18.0);
+    }
+
+    /// A ceiling below `1` yields an **empty** grid, because the loop starts at
+    /// `p = 1`. [`gist`] cannot reach it — the smallest ceiling it passes is
+    /// `2/eps` at `eps = 1`, i.e. `2` — but [`thresholds_with_bound`] is called
+    /// with a caller-supplied bound by this crate's own tests and benches, and an
+    /// empty grid would leave the sweep with no candidate at all.
+    #[test]
+    fn a_ceiling_below_one_yields_no_thresholds() {
+        for bound in [-1.0f64, 0.0, 0.5, 0.999_999] {
+            assert!(
+                thresholds_with_bound(1.0, 0.1, bound).is_empty(),
+                "bound = {bound} produced a grid"
+            );
+        }
+        // The boundary: `p == bound == 1` is inside the `<=`.
+        assert_eq!(thresholds_with_bound(1.0, 0.1, 1.0).len(), 1);
+        // What the driver actually passes, at both ends of the eps range.
+        assert_eq!(2.0 / f64::from(1.0f32), 2.0);
+        assert_eq!(thresholds_with_bound(1.0, 1.0, 2.0).len(), 2);
     }
 
     // ---- (c) the scaled-down paper synthetic setup -------------------------
@@ -1907,6 +2085,35 @@ mod tests {
         };
         let out = gist(&one, &mut util, &cfg).expect("f32::EPSILON is the bottom of the range");
         assert_eq!(out.selected, vec![0]);
+    }
+
+    /// The threshold counts the docs quote are the sizes of the real grid.
+    ///
+    /// [`GistConfig::eps`] and the Python stub both put numbers on the `1/eps`
+    /// cost, and those numbers are the only quantitative anchor a caller has when
+    /// sizing a run. Transcribed here so an invented one fails the suite.
+    #[test]
+    fn the_documented_threshold_counts_are_the_real_ones() {
+        // The two counts quoted for the default eps.
+        assert_eq!(thresholds(1.0, 0.1).len(), 32);
+        assert_eq!(thresholds_with_bound(1.0, 0.1, 4.0 / 0.1).len(), 39);
+        // The quoted cost of a "tiny" eps.
+        assert_eq!(thresholds(1.0, 1e-4).len(), 99_040);
+
+        // The bottom of the accepted range is quoted from the closed form
+        // `|D| = 1 + floor(log_{1+eps}(bound))`, because building it really does
+        // cost about 560 MB. The form is checked against the loop first, at the
+        // three eps values cheap enough to run.
+        let closed = |eps: f64, bound: f64| 1 + (bound.ln() / (1.0 + eps).ln()).floor() as u64;
+        for eps in [0.1f32, 1e-3, 1e-4] {
+            assert_eq!(
+                closed(f64::from(eps), 2.0 / f64::from(eps)),
+                thresholds(1.0, eps).len() as u64,
+                "closed form disagrees with the loop at eps = {eps}"
+            );
+        }
+        let floor = f64::from(f32::EPSILON);
+        assert_eq!(closed(floor, 2.0 / floor), 139_548_968);
     }
 
     /// Line 5 compares **strictly**: a diametrical pair that only *ties* the

@@ -34,17 +34,20 @@ pub trait Utility: Send + Sync {
     ///
     /// # Panics
     ///
-    /// All three built-ins index a per-point table by `v`, so they panic when `v`
-    /// is out of range for the point set. Call [`Utility::validate`] once up
-    /// front to rule that out.
+    /// All three built-ins panic when they are not sized for `pts`: [`Linear`]
+    /// and [`Coverage`] index a per-point table by `v`, and
+    /// [`FacilityLocation`], whose loop runs over its own cache, asserts that
+    /// cache's length instead — unconditionally, so a release build cannot
+    /// answer from a truncated point set. Call [`Utility::validate`] once up
+    /// front to rule both out.
     fn marginal(&self, v: usize, selected: &[usize], pts: &Points<'_>) -> f64;
 
     /// Called after `v` is committed so caches can update.
     ///
     /// # Panics
     ///
-    /// As for [`Utility::marginal`]: the built-ins index a per-point table by
-    /// `v`, so an out-of-range `v` panics.
+    /// As for [`Utility::marginal`]: an out-of-range `v` panics, and so does a
+    /// [`FacilityLocation`] cache built for a different point count.
     fn commit(&mut self, v: usize, pts: &Points<'_>);
 
     /// Return to the empty-selection state.
@@ -337,9 +340,15 @@ impl FacilityLocation {
 
 impl Utility for FacilityLocation {
     fn marginal(&self, v: usize, _selected: &[usize], pts: &Points<'_>) -> f64 {
-        // The loop runs over the cache, so an undersized cache would silently
-        // drop the tail of the point set instead of panicking.
-        debug_assert_eq!(
+        // The loop runs over the cache, not over the points, so an undersized
+        // cache would silently score a truncated point set. The other two
+        // built-ins index a per-point table and panic on their own; this one has
+        // to say so, and it has to say so in **release** as well -- a
+        // `debug_assert` here would make `greedy_independent_set`, which
+        // documents a panic and deliberately skips `validate`, return a
+        // different selection depending on the profile. One `usize` comparison
+        // against an O(n) loop.
+        assert_eq!(
             self.best.len(),
             pts.n(),
             "facility-location cache was built for a different point set"
@@ -352,7 +361,8 @@ impl Utility for FacilityLocation {
     }
 
     fn commit(&mut self, v: usize, pts: &Points<'_>) {
-        debug_assert_eq!(
+        // As in `marginal`: unconditional, so both profiles agree.
+        assert_eq!(
             self.best.len(),
             pts.n(),
             "facility-location cache was built for a different point set"
@@ -657,6 +667,40 @@ mod tests {
         );
     }
 
+    /// The empty end of [`Coverage`]: every point covering nothing, with the
+    /// universe both inferred-as-zero and merely unused.
+    ///
+    /// `g` is then identically `0`, so a greedy run is decided entirely by the
+    /// tie-break (lowest index) and a [`crate::gist`] run entirely by `div`. The
+    /// `covered` vector is empty in the `universe == 0` case, which is the only
+    /// place `Coverage::reset`/`commit` iterate nothing at all.
+    #[test]
+    fn coverage_over_empty_item_lists_scores_zero_everywhere() {
+        let pts = four_points();
+        for universe in [0usize, 5] {
+            let mut empty = Coverage::new(vec![Vec::new(); pts.n()], universe)
+                .expect("empty rows are inside any universe");
+            assert_eq!(empty.universe(), universe);
+            assert_eq!(empty.validate(&pts), Ok(()));
+            for v in 0..pts.n() {
+                assert_eq!(empty.marginal(v, &[], &pts), 0.0, "point {v}");
+            }
+            // Committing covers nothing, so the marginals do not move.
+            empty.commit(0, &pts);
+            for v in 0..pts.n() {
+                assert_eq!(empty.marginal(v, &[0], &pts), 0.0, "point {v} after commit");
+            }
+            empty.reset();
+            assert_eq!(empty.marginal(0, &[], &pts), 0.0);
+
+            // All-zero marginals: greedy falls back to the lowest-index rule.
+            assert_eq!(
+                crate::greedy_independent_set(&pts, &mut empty, 0.0, 2),
+                vec![0, 1]
+            );
+        }
+    }
+
     // ---- FacilityLocation -------------------------------------------------
 
     #[test]
@@ -848,6 +892,33 @@ mod tests {
                 expected: 3,
                 got: 5
             }
+        );
+    }
+
+    /// [`crate::greedy_independent_set`] documents a panic -- not a different
+    /// answer -- for a utility built for another point count, and it deliberately
+    /// does not call [`Utility::validate`]. The promise has to hold in **release**
+    /// too: under a `debug_assert` the two profiles disagree, and an undersized
+    /// cache silently scores a truncated point set instead of panicking.
+    #[test]
+    #[should_panic(expected = "facility-location cache was built for a different point set")]
+    fn facility_location_with_a_short_cache_panics_in_every_profile() {
+        let pts = Points::new(vec![0.0, 1.0, 2.0, 3.0, 4.0, 8.0], 1, Metric::Euclidean).unwrap();
+        // A legal public constructor, and one whose `validate` reports the
+        // mismatch correctly -- greedy is documented as not calling it.
+        let mut util = FacilityLocation::with_scale(2, 8.0);
+        let _ = crate::greedy_independent_set(&pts, &mut util, 0.0, 3);
+    }
+
+    /// The same call with the cache the point set actually needs, so the panic
+    /// above is pinned as a size check and not as "any `with_scale` utility".
+    #[test]
+    fn facility_location_with_the_right_cache_selects_the_spread() {
+        let pts = Points::new(vec![0.0, 1.0, 2.0, 3.0, 4.0, 8.0], 1, Metric::Euclidean).unwrap();
+        let mut util = FacilityLocation::with_scale(pts.n(), 8.0);
+        assert_eq!(
+            crate::greedy_independent_set(&pts, &mut util, 0.0, 3),
+            vec![2, 5, 0]
         );
     }
 

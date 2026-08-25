@@ -101,9 +101,13 @@ def gist_select(
             ``1 + floor(log(2/eps) / log(1+eps))`` entries (32 at the default),
             or ``1 + floor(log(4/eps) / log(1+eps))`` under ``diameter="approx"``
             (39 at the default), so the cost grows like ``1/eps``: ``1e-4``
-            already means about 200 000 greedy runs. The lower end of the range
-            is where the ``float32`` grid stops being able to separate two
-            consecutive entries -- below it the set is unbounded, not precise.
+            already means 99 040 thresholds, and one greedy run each. The lower
+            end of the range is where the ``float32`` grid stops being able to
+            separate two consecutive entries -- below it the set is unbounded,
+            not precise. That floor is a representability bound, not a resource
+            one: ``eps = 1.1920929e-07`` itself builds 139 548 968 thresholds
+            (about 560 MB) and runs greedy that many times. Nothing caps the
+            threshold count.
         metric: ``"cosine"`` (rows are L2-normalised into a copy, distance is
             ``1 - a.b``) or ``"euclidean"`` (zero-copy).
         utility: ``"linear"``, ``"coverage"`` or ``"facility_location"``.

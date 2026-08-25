@@ -78,8 +78,9 @@ use crate::utility::Utility;
 ///
 /// # Panics
 ///
-/// Panics if `util` indexes a per-point table shorter than `pts.n()`; see
-/// [`Utility::marginal`].
+/// Panics if `util` is not sized for `pts` — a per-point table shorter than
+/// `pts.n()`, or a [`crate::FacilityLocation`] cache built for another point
+/// count. Both panic in release as well as in debug; see [`Utility::marginal`].
 pub fn greedy_independent_set(
     pts: &Points<'_>,
     util: &mut dyn Utility,
