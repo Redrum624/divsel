@@ -24,7 +24,7 @@ and `git push -u origin main`).
 ## 2. Publish the crate
 
 ```
-cargo login          # paste a crates.io token with publish-new scope
+cargo login          # paste a crates.io token with publish-new scope (0.1.1 and later need publish-update)
 cargo publish -p divsel
 ```
 
