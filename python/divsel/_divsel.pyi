@@ -46,7 +46,7 @@ def gist_select(
     utility: Literal["linear", "coverage", "facility_location"] = "linear",
     exhaustive_thresholds: bool = False,
     diameter: Literal["exact", "approx"] = "exact",
-    diameter_sweeps: int = 3,
+    diameter_sweeps: int | None = None,
 ) -> list[int]:
     """Select up to ``k`` rows of ``vectors`` with GIST (arXiv:2405.18754v3, NeurIPS 2025).
 
@@ -119,12 +119,14 @@ def gist_select(
             ``"approx"`` for a farthest-point double sweep whose estimate lies in
             ``[d_max/2, d_max]``.
         diameter_sweeps: Number of double sweeps under ``diameter="approx"``.
-            Must be an ``int`` ``>= 0`` (a negative value raises ``ValueError``,
-            and so does one too large for a signed 64-bit integer; a ``bool``
-            raises ``TypeError``, exactly as for ``k``); ``0`` is treated as
-            ``1``; ignored under ``"exact"``. No upper bound is enforced: each
-            sweep costs ``O(n * d)``, so a very large value simply runs that
-            long.
+            ``None``, the default, means **3** sweeps -- the default object
+            really is ``None``, in the signature, in the stub and at runtime, so
+            passing it explicitly is the same as omitting it. Otherwise it must
+            be an ``int`` ``>= 0`` (a negative value raises ``ValueError``, and
+            so does one too large for a signed 64-bit integer; a ``bool`` raises
+            ``TypeError``, exactly as for ``k``); ``0`` is treated as ``1``;
+            ignored under ``"exact"``. No upper bound is enforced: each sweep
+            costs ``O(n * d)``, so a very large value simply runs that long.
 
     Returns:
         The selected row indices, in selection order, at most ``k`` of them.
@@ -166,7 +168,7 @@ def gist_select_full(
     utility: Literal["linear", "coverage", "facility_location"] = "linear",
     exhaustive_thresholds: bool = False,
     diameter: Literal["exact", "approx"] = "exact",
-    diameter_sweeps: int = 3,
+    diameter_sweeps: int | None = None,
 ) -> GistResult:
     """:func:`gist_select` with the full result.
 

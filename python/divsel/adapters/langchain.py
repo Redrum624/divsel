@@ -22,14 +22,14 @@ from typing import Any, Literal
 import numpy as np
 
 from divsel import gist_select
-from divsel.adapters import DivselFallbackWarning
+from divsel.adapters import MIN_EPS, DivselFallbackWarning
 
 try:
     from langchain_core.callbacks import CallbackManagerForRetrieverRun
     from langchain_core.documents import Document
     from langchain_core.retrievers import BaseRetriever
     from langchain_core.vectorstores import VectorStore
-    from pydantic import ConfigDict, Field
+    from pydantic import ConfigDict, Field, field_validator
 except ImportError as exc:  # pragma: no cover - exercised in framework-free venvs
     raise ImportError(
         "divsel.adapters.langchain requires langchain-core. "
@@ -56,7 +56,8 @@ class DivselRetriever(BaseRetriever):
     ``utility="facility_location"`` no weights are passed.
 
     When embeddings are unavailable (``vectorstore.embeddings`` is ``None`` or
-    an ``embed_*`` call raises ``NotImplementedError``) the retriever warns
+    itself raises ``NotImplementedError``, or an ``embed_*`` call does) the
+    retriever warns
     with :class:`~divsel.adapters.DivselFallbackWarning` and returns the plain
     top-``k`` ``similarity_search`` result — not diversified. Set
     ``strict=True`` to get a ``ValueError`` instead.
@@ -74,10 +75,18 @@ class DivselRetriever(BaseRetriever):
     """Number of documents to return (``|S| <= k``); must be ``> 0``."""
     fetch_k: int = Field(default=20, gt=0)
     """Number of candidates fetched by query similarity before diversifying."""
-    lam: float = Field(default=1.0, ge=0.0)
-    """Weight of the min-pairwise-distance diversity term; must be ``>= 0``."""
-    eps: float = Field(default=0.1, gt=0.0, le=1.0)
-    """GIST threshold-sweep accuracy, in ``(0, 1]``."""
+    lam: float = Field(default=1.0, ge=0.0, allow_inf_nan=False)
+    """Weight of the diversity term; must be finite and ``>= 0``.
+
+    ``allow_inf_nan=False`` because pydantic allows both by default and
+    ``inf >= 0.0`` is true, so ``+inf`` would pass the bound here and fail the
+    core's finite check at the first query. ``nan`` fails ``>= 0`` either way.
+    """
+    eps: float = Field(default=0.1, ge=MIN_EPS, le=1.0)
+    """GIST threshold-sweep accuracy, in ``[MIN_EPS, 1]`` -- the range the core
+    accepts, ``float(np.finfo(np.float32).eps)`` (about ``1.19e-7``) to ``1.0``.
+    Below that floor the ``float32`` threshold grid cannot separate two
+    consecutive entries."""
     metric: Literal["cosine", "euclidean"] = "cosine"
     """``"cosine"`` or ``"euclidean"``."""
     utility: Literal["linear", "facility_location"] = "linear"
@@ -86,6 +95,19 @@ class DivselRetriever(BaseRetriever):
     """Raise ``ValueError`` instead of falling back to plain top-k."""
 
     model_config = ConfigDict(arbitrary_types_allowed=True)
+
+    @field_validator("k", "fetch_k", mode="before")
+    @classmethod
+    def _budget_is_not_a_bool(cls, value: Any) -> Any:
+        # `bool` is a subclass of `int` and pydantic's default lax mode coerces
+        # it, so `k=True` would arrive here as `1` and the retriever would
+        # quietly return one document. That is the same input divsel's own
+        # binding rejects (`k must be an int, not bool`) on the grounds that it
+        # is never what a caller meant; `gt=0` catches `False` but nothing
+        # catches `True`, so the rule has to be stated once for both.
+        if isinstance(value, bool):
+            raise ValueError("must be an int, not bool")
+        return value
 
     @classmethod
     def from_vectorstore(cls, vectorstore: VectorStore, **kwargs: Any) -> DivselRetriever:
@@ -111,7 +133,15 @@ class DivselRetriever(BaseRetriever):
     def _get_relevant_documents(
         self, query: str, *, run_manager: CallbackManagerForRetrieverRun
     ) -> list[Document]:
-        embeddings = self.vectorstore.embeddings
+        # `embeddings` is a property, and a property can raise: langchain-core's
+        # base `VectorStore` returns `None`, but a concrete store is free to
+        # raise `NotImplementedError` there instead -- the same way the three
+        # calls below can. Guarding only `is None` let that escape past both the
+        # warn path and the strict path as a bare `NotImplementedError`.
+        try:
+            embeddings = self.vectorstore.embeddings
+        except NotImplementedError:
+            return self._fallback(query, "vectorstore.embeddings is not implemented")
         if embeddings is None:
             return self._fallback(query, "vectorstore.embeddings is None")
 

@@ -14,7 +14,20 @@ from __future__ import annotations
 
 from typing import Any
 
-__all__ = ["DivselFallbackWarning", "DivselNodePostprocessor", "DivselRetriever"]
+__all__ = [
+    "MIN_EPS",
+    "DivselFallbackWarning",
+    "DivselNodePostprocessor",
+    "DivselRetriever",
+]
+
+#: The smallest ``eps`` :func:`divsel.gist_select` accepts: ``2 ** -23``, which
+#: is ``float(np.finfo(np.float32).eps)`` exactly. Both adapters constrain their
+#: ``eps`` field to ``[MIN_EPS, 1.0]``, so the range a field advertises is the
+#: range the library serves -- an adapter that accepted ``(0, 1]`` took
+#: ``eps=1e-9`` at construction and then raised a Rust-worded ``ValueError``
+#: from inside the first query, after a full fetch-and-embed round trip.
+MIN_EPS = 2.0**-23
 
 
 class DivselFallbackWarning(UserWarning):

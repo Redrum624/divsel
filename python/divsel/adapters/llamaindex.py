@@ -20,13 +20,13 @@ from typing import List, Literal, Optional
 import numpy as np
 
 from divsel import gist_select
-from divsel.adapters import DivselFallbackWarning
+from divsel.adapters import MIN_EPS, DivselFallbackWarning
 
 try:
     from llama_index.core.base.embeddings.base import BaseEmbedding
     from llama_index.core.postprocessor.types import BaseNodePostprocessor
     from llama_index.core.schema import NodeWithScore, QueryBundle
-    from pydantic import Field
+    from pydantic import Field, field_validator
 except ImportError as exc:  # pragma: no cover - exercised in framework-free venvs
     raise ImportError(
         "divsel.adapters.llamaindex requires llama-index-core. "
@@ -64,10 +64,18 @@ class DivselNodePostprocessor(BaseNodePostprocessor):
     # below stays as a guard: pydantic does not revalidate assignment by default.
     k: int = Field(default=5, gt=0)
     """Number of nodes to return (``|S| <= k``); must be ``> 0``."""
-    lam: float = Field(default=1.0, ge=0.0)
-    """Weight of the min-pairwise-distance diversity term; must be ``>= 0``."""
-    eps: float = Field(default=0.1, gt=0.0, le=1.0)
-    """GIST threshold-sweep accuracy, in ``(0, 1]``."""
+    lam: float = Field(default=1.0, ge=0.0, allow_inf_nan=False)
+    """Weight of the diversity term; must be finite and ``>= 0``.
+
+    ``allow_inf_nan=False`` because pydantic allows both by default and
+    ``inf >= 0.0`` is true, so ``+inf`` would pass the bound here and fail the
+    core's finite check at the first query. ``nan`` fails ``>= 0`` either way.
+    """
+    eps: float = Field(default=0.1, ge=MIN_EPS, le=1.0)
+    """GIST threshold-sweep accuracy, in ``[MIN_EPS, 1]`` -- the range the core
+    accepts, ``float(np.finfo(np.float32).eps)`` (about ``1.19e-7``) to ``1.0``.
+    Below that floor the ``float32`` threshold grid cannot separate two
+    consecutive entries."""
     metric: Literal["cosine", "euclidean"] = "cosine"
     """``"cosine"`` or ``"euclidean"``."""
     utility: Literal["linear", "facility_location"] = "linear"
@@ -76,6 +84,18 @@ class DivselNodePostprocessor(BaseNodePostprocessor):
     """Raise ``ValueError`` instead of falling back to plain top-k."""
     embed_model: Optional[BaseEmbedding] = None
     """Used to embed node content when nodes carry no embeddings."""
+
+    @field_validator("k", mode="before")
+    @classmethod
+    def _budget_is_not_a_bool(cls, value: object) -> object:
+        # `bool` is a subclass of `int` and pydantic's default lax mode coerces
+        # it, so `k=True` would arrive here as `1` and the postprocessor would
+        # quietly return one node. That is the same input divsel's own binding
+        # rejects (`k must be an int, not bool`); `gt=0` catches `False` but
+        # nothing catches `True`.
+        if isinstance(value, bool):
+            raise ValueError("must be an int, not bool")
+        return value
 
     @classmethod
     def class_name(cls) -> str:

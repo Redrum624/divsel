@@ -36,9 +36,9 @@ use divsel::{
     Metric, Points, Stage, Utility,
 };
 use numpy::{PyArray1, PyArray2, PyArrayMethods, PyUntypedArrayMethods};
-use pyo3::exceptions::{PyTypeError, PyValueError};
+use pyo3::exceptions::{PyOverflowError, PyTypeError, PyValueError};
 use pyo3::prelude::*;
-use pyo3::types::{PyBool, PyDict, PyInt};
+use pyo3::types::{PyBool, PyDict};
 
 /// Raised for any `vectors` that is not exactly a C-contiguous `float32` matrix.
 const VECTORS_TYPE_ERROR: &str = "vectors must be a C-contiguous float32 array of shape (n, d); \
@@ -210,11 +210,18 @@ fn coverage_sets(utilities: Option<&Bound<'_, PyAny>>) -> PyResult<(Vec<Vec<u32>
 ///
 /// `bool` is a subclass of `int` in Python, so a plain integer extraction would
 /// silently read `k=True` as `k=1` and `diameter_sweeps=True` as one sweep; that
-/// is never what a caller meant, and it is a `TypeError` here. A Python `int`
-/// too large for `i64` is reported as a `ValueError` -- the range error it is --
-/// rather than as the `OverflowError` a `usize`/`i64` extraction raises, which is
-/// an exception class this module's contract does not list. Anything that is not
-/// an `int` at all keeps the `TypeError` the extraction itself produces.
+/// is never what a caller meant, and it is a `TypeError` here. A value too large
+/// for `i64` is reported as a `ValueError` -- the range error it is -- rather
+/// than as the `OverflowError` the extraction raises, which is an exception class
+/// this module's contract does not list. Anything that is not an integer at all
+/// keeps the `TypeError` the extraction itself produces.
+///
+/// The range arm keys on the **exception**, not on the argument's type: an
+/// earlier version asked `is_instance_of::<PyInt>()`, which is true only for
+/// `int` and its subclasses, so every other int-like the extraction accepts --
+/// a numpy integer scalar, anything with `__index__` -- still escaped as an
+/// `OverflowError` and falsified the contract for exactly the arguments a numpy
+/// caller is most likely to pass.
 fn budget(value: &Bound<'_, PyAny>, name: &str) -> PyResult<i64> {
     if value.is_instance_of::<PyBool>() {
         return Err(PyTypeError::new_err(format!(
@@ -223,9 +230,9 @@ fn budget(value: &Bound<'_, PyAny>, name: &str) -> PyResult<i64> {
     }
     match value.extract::<i64>() {
         Ok(value) => Ok(value),
-        Err(_) if value.is_instance_of::<PyInt>() => Err(PyValueError::new_err(format!(
-            "{name} must fit a 64-bit signed integer"
-        ))),
+        Err(err) if err.is_instance_of::<PyOverflowError>(value.py()) => Err(
+            PyValueError::new_err(format!("{name} must fit a 64-bit signed integer")),
+        ),
         Err(err) => Err(err),
     }
 }
@@ -348,12 +355,13 @@ fn solve(
     utility="linear", exhaustive_thresholds=false, diameter="exact", diameter_sweeps=None))]
 // `diameter_sweeps` is taken as an object so that a `bool` can be rejected the
 // way `k`'s is (see `budget`), which a plain `i64` parameter cannot do -- pyo3
-// would already have read `True` as `1`. Omitting it still means 3 sweeps, and
-// the explicit text signature is what keeps that visible to `help()` and
-// `inspect.signature`, since the pyo3 default is now `None`.
+// would already have read `True` as `1`. The default object is therefore `None`,
+// which the solve reads as the documented 3 sweeps; the text signature says
+// `None` too, so `help()`, `inspect.signature`, the .pyi stub and the runtime
+// all report the same default instead of three different ones.
 #[pyo3(
     text_signature = "(vectors, utilities=None, *, k, lam=1.0, eps=0.1, metric='cosine', \
-    utility='linear', exhaustive_thresholds=False, diameter='exact', diameter_sweeps=3)"
+    utility='linear', exhaustive_thresholds=False, diameter='exact', diameter_sweeps=None)"
 )]
 #[allow(clippy::too_many_arguments)]
 fn gist_select(
@@ -400,12 +408,13 @@ fn gist_select(
     utility="linear", exhaustive_thresholds=false, diameter="exact", diameter_sweeps=None))]
 // `diameter_sweeps` is taken as an object so that a `bool` can be rejected the
 // way `k`'s is (see `budget`), which a plain `i64` parameter cannot do -- pyo3
-// would already have read `True` as `1`. Omitting it still means 3 sweeps, and
-// the explicit text signature is what keeps that visible to `help()` and
-// `inspect.signature`, since the pyo3 default is now `None`.
+// would already have read `True` as `1`. The default object is therefore `None`,
+// which the solve reads as the documented 3 sweeps; the text signature says
+// `None` too, so `help()`, `inspect.signature`, the .pyi stub and the runtime
+// all report the same default instead of three different ones.
 #[pyo3(
     text_signature = "(vectors, utilities=None, *, k, lam=1.0, eps=0.1, metric='cosine', \
-    utility='linear', exhaustive_thresholds=False, diameter='exact', diameter_sweeps=3)"
+    utility='linear', exhaustive_thresholds=False, diameter='exact', diameter_sweeps=None)"
 )]
 #[allow(clippy::too_many_arguments)]
 fn gist_select_full<'py>(

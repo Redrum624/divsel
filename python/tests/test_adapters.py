@@ -497,14 +497,35 @@ def test_adapters_lazy_reexport_of_the_llamaindex_class():
     [
         {"k": 0},
         {"k": -1},
+        {"k": True},
         {"fetch_k": 0},
+        {"fetch_k": True},
         {"lam": -1.0},
+        {"lam": float("inf")},
+        {"lam": float("nan")},
         {"eps": 0.0},
         {"eps": 1.5},
+        {"eps": 1e-9},
+        {"eps": 1e-30},
         {"metric": "manhattan"},
         {"utility": "coverage"},
     ],
-    ids=["k0", "k_neg", "fetch_k0", "lam_neg", "eps0", "eps_high", "metric", "utility"],
+    ids=[
+        "k0",
+        "k_neg",
+        "k_true",
+        "fetch_k0",
+        "fetch_k_true",
+        "lam_neg",
+        "lam_inf",
+        "lam_nan",
+        "eps0",
+        "eps_high",
+        "eps_below_f32_epsilon",
+        "eps_tiny",
+        "metric",
+        "utility",
+    ],
 )
 def test_langchain_invalid_configuration_fails_at_construction(kwargs):
     """Every constraint is a field constraint, so nothing waits for a query.
@@ -614,6 +635,39 @@ def test_langchain_falls_back_on_each_notimplemented_hook(broken, reason):
         strict.invoke(QUERY_TEXT)
 
 
+def test_langchain_falls_back_when_the_embeddings_property_itself_raises():
+    """``vectorstore.embeddings`` is a property, and a property can raise.
+
+    The adapter guarded ``embeddings is None`` and then guarded
+    ``NotImplementedError`` around each ``embed_*`` call and around
+    ``similarity_search_by_vector`` — but not around the attribute access that
+    reaches them. langchain-core's base ``VectorStore.embeddings`` returns
+    ``None``; a concrete store is free to raise ``NotImplementedError`` there
+    instead, and that escaped past both the warn path and the strict path as a
+    bare ``NotImplementedError``.
+    """
+    pytest.importorskip("langchain_core")
+    from divsel.adapters import DivselFallbackWarning
+    from divsel.adapters.langchain import DivselRetriever
+
+    ns = _lc_edge()
+
+    class NoEmbeddings(ns.Store):
+        @property
+        def embeddings(self):
+            raise NotImplementedError
+
+    store = NoEmbeddings(ns.Partial())
+    retriever = DivselRetriever(vectorstore=store, k=4)
+    with pytest.warns(DivselFallbackWarning, match="embeddings"):
+        docs = retriever.invoke(QUERY_TEXT)
+    assert [d.page_content for d in docs] == [TEXTS[i] for i in RELEVANCE_ORDER[:4]]
+
+    strict = DivselRetriever(vectorstore=store, k=4, strict=True)
+    with pytest.raises(ValueError, match="embeddings"):
+        strict.invoke(QUERY_TEXT)
+
+
 def test_langchain_no_candidates_returns_empty_without_warning():
     pytest.importorskip("langchain_core")
     from divsel.adapters.langchain import DivselRetriever
@@ -674,13 +728,31 @@ def test_langchain_unknown_utility_after_construction_raises():
     [
         {"k": 0},
         {"k": -1},
+        {"k": True},
         {"lam": -1.0},
+        {"lam": float("inf")},
+        {"lam": float("nan")},
         {"eps": 0.0},
         {"eps": 1.5},
+        {"eps": 1e-9},
+        {"eps": 1e-30},
         {"metric": "manhattan"},
         {"utility": "coverage"},
     ],
-    ids=["k0", "k_neg", "lam_neg", "eps0", "eps_high", "metric", "utility"],
+    ids=[
+        "k0",
+        "k_neg",
+        "k_true",
+        "lam_neg",
+        "lam_inf",
+        "lam_nan",
+        "eps0",
+        "eps_high",
+        "eps_below_f32_epsilon",
+        "eps_tiny",
+        "metric",
+        "utility",
+    ],
 )
 def test_llamaindex_invalid_configuration_fails_at_construction(kwargs):
     pytest.importorskip("llama_index.core")
@@ -688,6 +760,24 @@ def test_llamaindex_invalid_configuration_fails_at_construction(kwargs):
 
     with pytest.raises(ValueError):
         DivselNodePostprocessor(**kwargs)
+
+
+def test_llamaindex_no_nodes_returns_empty_without_warning():
+    """The empty-input guard, whose LangChain twin is already covered.
+
+    Nothing to diversify is not a fallback: no warning, no ``ValueError`` under
+    ``strict``, and no call into the core.
+    """
+    pytest.importorskip("llama_index.core")
+    from divsel.adapters.llamaindex import DivselNodePostprocessor
+
+    for post in (
+        DivselNodePostprocessor(k=3),
+        DivselNodePostprocessor(k=3, strict=True),
+    ):
+        with warnings.catch_warnings():
+            warnings.simplefilter("error")
+            assert post.postprocess_nodes([], query_str=QUERY_TEXT) == []
 
 
 def test_llamaindex_facility_location_diversifies():

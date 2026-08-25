@@ -171,25 +171,24 @@ def test_diameter_sweeps_outside_the_i64_range_raises_valueerror():
     assert not isinstance(info.value, OverflowError)
 
 
-def test_diameter_sweeps_defaults_to_three_when_omitted():
-    # The pyo3 default is None (the argument is taken as an object so a bool can
-    # be rejected); omitting it must still mean the documented 3 sweeps.
-    x = _random_vectors(12, 3)
-    omitted = gist_select_full(x, k=3, metric="euclidean", diameter="approx")
-    explicit = gist_select_full(
-        x, k=3, metric="euclidean", diameter="approx", diameter_sweeps=3
+def test_the_declared_default_sweeps_is_the_object_the_binding_uses():
+    # Three sources used to give three answers: the pyo3 default (`None`), the
+    # hand-written text signature (`3`) and the stub (`3`). They agree on `None`
+    # now, and the docstring is where "None means 3 sweeps" is written.
+    # The *behaviour* of that default is pinned below, on a fixture where the
+    # sweep count decides the answer.
+    import inspect
+
+    assert (
+        inspect.signature(gist_select).parameters["diameter_sweeps"].default is None
     )
-    assert omitted == explicit
-    assert "diameter_sweeps=3" in (gist_select.__doc__ or "") + str(
+    assert (
+        inspect.signature(gist_select_full).parameters["diameter_sweeps"].default
+        is None
+    )
+    assert "diameter_sweeps=None" in str(
         getattr(gist_select, "__text_signature__", "")
     )
-
-
-def test_zero_diameter_sweeps_is_treated_as_one():
-    x = _random_vectors(12, 3)
-    zero = gist_select_full(x, k=3, metric="euclidean", diameter="approx", diameter_sweeps=0)
-    one = gist_select_full(x, k=3, metric="euclidean", diameter="approx", diameter_sweeps=1)
-    assert zero == one
 
 
 def test_negative_diameter_sweeps_raises_valueerror():
@@ -446,3 +445,137 @@ def test_coverage_item_id_above_u32_max_raises_valueerror():
     x = _random_vectors(2, 2)
     with pytest.raises(ValueError, match=r"row 1 must be a non-negative int no larger than 4294967295"):
         gist_select(x, [[0], [2**32]], k=1, utility="coverage")
+
+
+# --- round-2 gaps ------------------------------------------------------------
+
+# A 12x3 Gaussian set on which the farthest-point walk needs four double sweeps
+# to converge, so d_hat is strictly increasing for sweeps = 1, 2, 3, 4:
+# 3.8591561, 4.2479930, 4.4063721, 4.4678040. Every other fixture in this file
+# converges on the first sweep, which is why the default-sweeps tests below can
+# say something the sweep count actually decides.
+_SWEEP_SENSITIVE = [
+    0.42473456, 0.53754765, -0.65292674, -0.495182, 0.76948655, -0.13159879,
+    0.39689574, -0.192833, 1.8935074, -1.3601785, -0.45732597, 0.49488983,
+    -0.23497039, 0.33717105, -1.7059377, 1.992929, -0.9904514, 0.55411506,
+    -0.29105875, 0.18395717, 0.650892, -0.45368975, 2.3688433, -0.32602257,
+    -0.5333204, -1.0139397, -1.6846485, -0.49256995, -1.9239715, -0.8081258,
+    1.9454916, 0.95573187, 1.4676777, -0.5040848, 1.3585472, -1.523295,
+]
+
+
+def _sweep_sensitive_vectors() -> np.ndarray:
+    return np.ascontiguousarray(
+        np.array(_SWEEP_SENSITIVE, dtype=np.float32).reshape(12, 3)
+    )
+
+
+def _d_hat(sweeps) -> float:
+    kw = {} if sweeps is None else {"diameter_sweeps": sweeps}
+    return gist_select_full(
+        _sweep_sensitive_vectors(), k=1, metric="euclidean", diameter="approx", **kw
+    )["d_max"]
+
+
+def test_the_sweep_sensitive_fixture_separates_every_sweep_count():
+    # Guards the guard: without this, the two tests below would be assertions
+    # about a value no sweep count can change.
+    assert _d_hat(1) < _d_hat(2) < _d_hat(3) < _d_hat(4)
+
+
+def test_diameter_sweeps_defaults_to_exactly_three_when_omitted():
+    # The pyo3 default is None (the argument is taken as an object so a bool can
+    # be rejected); omitting it must mean the documented 3 sweeps, and this
+    # fixture can tell 3 apart from both 2 and 4.
+    assert _d_hat(None) == _d_hat(3)
+    assert _d_hat(None) != _d_hat(2)
+    assert _d_hat(None) != _d_hat(4)
+
+
+def test_passing_none_for_diameter_sweeps_is_the_default():
+    # `None` is what the signature itself says, so it has to be accepted.
+    assert _d_hat(None) == gist_select_full(
+        _sweep_sensitive_vectors(),
+        k=1,
+        metric="euclidean",
+        diameter="approx",
+        diameter_sweeps=None,
+    )["d_max"]
+
+
+def test_zero_diameter_sweeps_is_one_sweep_not_zero_sweeps():
+    assert _d_hat(0) == _d_hat(1)
+    assert _d_hat(0) != _d_hat(2)
+
+
+@pytest.mark.parametrize("name", ["k", "diameter_sweeps"])
+def test_a_non_int_budget_raises_typeerror(name):
+    # `budget`'s passthrough arm: not an int, not a bool, so the extraction's own
+    # TypeError stands. Documented in _divsel.pyi as "or any other non-``int``".
+    x = _random_vectors(4, 2)
+    kwargs = {"k": 2, "diameter": "approx"}
+    kwargs[name] = "3"
+    with pytest.raises(TypeError, match="cannot be interpreted as an integer"):
+        gist_select(x, **kwargs)
+    with pytest.raises(TypeError, match="cannot be interpreted as an integer"):
+        gist_select_full(x, **kwargs)
+
+
+@pytest.mark.parametrize(
+    "value",
+    [np.uint64(2**63), np.uint64(2**64 - 1)],
+    ids=["uint64_i64_max_plus_one", "uint64_max"],
+)
+def test_a_numpy_integer_outside_the_i64_range_raises_valueerror(value):
+    # The stub promises ValueError, "never OverflowError", without restricting
+    # that to `int` subclasses: a numpy integer scalar is an int-like the binding
+    # accepts everywhere else, so the range error has to be a ValueError too.
+    x = _random_vectors(4, 2)
+    for fn in (gist_select, gist_select_full):
+        with pytest.raises(ValueError) as info:
+            fn(x, k=value)
+        assert not isinstance(info.value, OverflowError)
+        with pytest.raises(ValueError) as info:
+            fn(x, k=2, diameter="approx", diameter_sweeps=value)
+        assert not isinstance(info.value, OverflowError)
+
+
+def test_an_index_object_outside_the_i64_range_raises_valueerror():
+    class Huge:
+        def __index__(self):
+            return 2**200
+
+    x = _random_vectors(4, 2)
+    with pytest.raises(ValueError) as info:
+        gist_select(x, k=Huge())
+    assert not isinstance(info.value, OverflowError)
+
+
+def test_a_numpy_integer_budget_inside_the_range_is_accepted():
+    # The other side of the rule above: an int-like that fits is still a budget.
+    x = _random_vectors(6, 2)
+    assert gist_select(x, k=np.int64(2)) == gist_select(x, k=2)
+
+
+def test_a_strided_linear_utilities_vector_raises_typeerror_naming_the_fix():
+    # `is_c_contiguous` on the 1-D `utilities`: a slice with a stride has the
+    # right dtype and the right length, and `as_slice` would hand back the
+    # wrong values.
+    x = _random_vectors(4, 2)
+    strided = np.ones(8, dtype=np.float64)[::2]
+    assert strided.shape == (4,) and not strided.flags["C_CONTIGUOUS"]
+    with pytest.raises(TypeError, match=r"ascontiguousarray\(u, dtype=np.float64\)"):
+        gist_select(x, strided, k=2)
+
+
+def test_identical_rows_give_a_zero_diameter_through_the_binding():
+    # d_max == 0 with n > 1: the sweep is skipped entirely, so the stage stays
+    # "greedy" and div is 0. Pinned in Rust, never through the binding.
+    x = np.ascontiguousarray(np.tile(np.array([1.0, 2.0, 3.0]), (4, 1)), dtype=np.float32)
+    r = gist_select_full(x, k=2, lam=1.0, metric="euclidean")
+    assert r["d_max"] == 0.0
+    assert r["div"] == 0.0
+    assert r["threshold"] == 0.0
+    assert r["stage"] == "greedy"
+    assert r["selected"] == [0, 1]
+    assert r["f_value"] == r["g_value"]
