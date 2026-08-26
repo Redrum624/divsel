@@ -22,6 +22,13 @@ jobs:
   rust:
     name: rust (fmt, clippy, test, MSRV check)
     runs-on: ubuntu-latest
+    # Every job here declares one. A step that hangs otherwise burns the
+    # default 360-minute job limit and, worse, uploads no log at all when the
+    # service finally stops it -- which is exactly how the `checks` matrix
+    # failed on 2026-08-26 (run 32964588936: `Build and test` frozen
+    # `in_progress`, cancelled at 45 minutes, nothing to read). Sized from the
+    # last all-green run, 32901377186: this job took 2 m 40 s.
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v6
       - uses: dtolnay/rust-toolchain@stable
@@ -91,6 +98,8 @@ jobs:
   golden:
     name: golden conformance (rust reader) / ${{ matrix.os }}
     runs-on: ${{ matrix.os }}
+    # 3 m 19 s at its slowest (windows-latest, run 32964588936).
+    timeout-minutes: 20
     strategy:
       fail-fast: false
       matrix:
@@ -113,6 +122,8 @@ jobs:
   simd-parity:
     name: simd parity (aarch64)
     runs-on: ubuntu-24.04-arm
+    # 26 s in run 32964588936; a cold cargo build is the only variable.
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v6
       - uses: dtolnay/rust-toolchain@stable
@@ -138,6 +149,12 @@ jobs:
   python:
     name: python ${{ matrix.python }} / ${{ matrix.os }}${{ matrix.extras && ' + adapters' || '' }}
     runs-on: ${{ matrix.os }}
+    # The whole cell, `maturin develop --release` from a cold cache included:
+    # 2 m 12 s at its slowest in the last all-green run (32901377186,
+    # windows-latest), 3 m 31 s in run 32964588936. 20 minutes is ~6x the worst
+    # observed, and it also caps what a macOS cell can cost at that runner's
+    # 10x minute multiplier.
+    timeout-minutes: 20
     strategy:
       fail-fast: false
       matrix:
@@ -167,9 +184,20 @@ jobs:
           # PyYAML is not a runtime dependency: python/tests/test_ci_scripts.py
           # lints these workflow files, and without it that test would skip --
           # which is the one place it must not.
-          pip install maturin pytest numpy pyyaml
+          # pytest-timeout is a CI-only guard and deliberately not in
+          # pyproject.toml: it is not needed to build, install or use the
+          # package, and the suite must stay runnable without it.
+          pip install maturin pytest pytest-timeout numpy pyyaml
           maturin develop --release
-          pytest python/tests -q
+          # Per-test ceiling, so a single stuck test dies with a traceback
+          # naming it instead of taking the job -- and the log -- down with it.
+          # The whole suite is ~20 s and the slowest single test is under 10 s,
+          # so 300 s is a ceiling only a hang can reach. The method is left to
+          # pytest-timeout: SIGALRM where it exists (the test fails, the run
+          # continues), a watchdog thread that dumps every stack on Windows.
+          # The flag goes *after* `-q`: test_ci_scripts.py's golden-reader lint
+          # matches the literal `pytest python/tests -q`.
+          pytest python/tests -q --timeout=300
       # Explicit golden-fixture gate: the Python half of the cross-language
       # conformance contract (docs/CONFORMANCE.md). Also part of the run above;
       # named here so a fixture regression is visible at a glance.

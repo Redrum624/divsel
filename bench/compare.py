@@ -489,6 +489,9 @@ def kill_tree(proc: subprocess.Popen) -> None:
     this harness reports -- and the next cell's wall clock and peak RSS would be
     measured against them. On POSIX the worker is started in its own session, so
     one `killpg` takes the group; on Windows `taskkill /T` walks the tree.
+
+    The POSIX arm kills a process group **only when it is not this process's
+    own**: see the comment below for what that guard is worth.
     """
     if os.name == "nt":
         subprocess.run(
@@ -497,10 +500,26 @@ def kill_tree(proc: subprocess.Popen) -> None:
             check=False,
         )
     else:
+        # Only a process started in a session of its own has a group that is
+        # safe to kill. `run_cell` passes `start_new_session=True` for exactly
+        # that reason; a process started *without* it is still in this
+        # process's group, and `killpg` there is suicide -- SIGKILL goes to
+        # every member, which includes this interpreter, the shell that started
+        # it, and on a GitHub runner the runner's own job process. That is not
+        # hypothetical: it is what took every Linux and macOS cell of the
+        # `checks` matrix down at 45 minutes with an empty log, the log being
+        # uploaded by a process that had been killed too. The direct child is
+        # still killed below; what a same-group caller gives up is the walk of
+        # its descendants, which is the right thing to give up.
         try:
-            os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
-        except (ProcessLookupError, PermissionError, OSError):
-            pass
+            pgid = os.getpgid(proc.pid)
+        except OSError:  # already gone, or already reaped
+            pgid = None
+        if pgid is not None and pgid != os.getpgrp():
+            try:
+                os.killpg(pgid, signal.SIGKILL)
+            except OSError:  # ProcessLookupError / PermissionError included
+                pass
     proc.kill()
     try:
         proc.wait(timeout=30)

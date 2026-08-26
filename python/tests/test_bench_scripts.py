@@ -203,6 +203,17 @@ def test_merge_into_updates_by_key_and_truncates_long_selections(tmp_path):
     assert json.loads(out.read_text(encoding="utf-8")) == second
 
 
+# What `compare.run_cell` passes on POSIX, and what every process this file
+# spawns for `kill_tree` has to pass too. Without it the spawned process stays
+# in the test runner's *own* process group, and the group `kill_tree` would
+# reach for is pytest's: `os.killpg(..., SIGKILL)` then kills this interpreter,
+# the shell running it and -- on a GitHub runner -- the runner's job process,
+# which is why those cells died at 45 minutes with no log at all. `kill_tree`
+# now refuses to kill its own group, so a test that wants the tree walk
+# exercised has to hand it a session of its own.
+_OWN_SESSION: dict = {} if os.name == "nt" else {"start_new_session": True}
+
+
 def _pid_is_alive(pid: int) -> bool:
     """Cross-platform "is this pid still running", for pids we do not own."""
     if os.name == "nt":
@@ -222,17 +233,33 @@ def _pid_is_alive(pid: int) -> bool:
     return True
 
 
+# How long a force-killed pid is given to leave the process table. POSIX
+# `SIGKILL` is asynchronous and, worse, the corpse of a process this one does
+# not own stays visible to `os.kill(pid, 0)` as a zombie until its parent reaps
+# it -- init, for the orphans this file creates on purpose, which is prompt but
+# not instant. "The kill returned" is therefore not "the process is gone", and
+# a caller that asserts the difference has to wait for it.
+_DEATH_S = 30.0
+
+
 def _force_kill(pid: int) -> None:
-    """Kill one pid directly, for a descendant `kill_tree` can no longer reach."""
+    """Kill one pid directly, for a descendant `kill_tree` can no longer reach.
+
+    Returns once the pid is gone (or `_DEATH_S` has passed), so a caller can
+    assert on `_pid_is_alive` straight afterwards.
+    """
     if os.name == "nt":
         subprocess.run(
             ["taskkill", "/F", "/PID", str(pid)], capture_output=True, check=False
         )
-        return
-    try:
-        os.kill(pid, signal.SIGKILL)
-    except (ProcessLookupError, PermissionError):  # pragma: no cover
-        pass
+    else:
+        try:
+            os.kill(pid, signal.SIGKILL)
+        except (ProcessLookupError, PermissionError):  # pragma: no cover
+            pass
+    deadline = time.monotonic() + _DEATH_S
+    while _pid_is_alive(pid) and time.monotonic() < deadline:
+        time.sleep(0.02)
 
 
 # How long a killed helper's child is given to name itself. The wait is spent
@@ -241,6 +268,13 @@ def _force_kill(pid: int) -> None:
 # few hundred ms. Generous enough for a cold interpreter on a loaded runner --
 # which is the machine this whole path exists for.
 _ORPHAN_REPORT_S = 5.0
+
+# The same wait where a name is *known* to be coming: the orphan handshake in
+# `_spawn_parent_with_a_child` releases the child to write, and all that is left
+# is a cold interpreter's start-up on a loaded runner. Missing it would leak the
+# 300-second sleeper and fail the assertion it exists to make, so this one is
+# sized for the worst runner rather than for the common case.
+_ORPHAN_HANDSHAKE_S = 60.0
 
 
 def _read_pid(ready: Path) -> int | None:
@@ -255,7 +289,7 @@ def _read_pid(ready: Path) -> int | None:
         return None
 
 
-def _reap(compare, proc, child_pid=None, ready=None) -> None:
+def _reap(compare, proc, child_pid=None, ready=None, report_s=_ORPHAN_REPORT_S) -> None:
     """Leave nothing behind: the tree, then the orphan, then the pipe.
 
     Order matters. `kill_tree` walks from the parent, so it is a no-op once the
@@ -273,12 +307,18 @@ def _reap(compare, proc, child_pid=None, ready=None) -> None:
     exactly the process the tree walk is most likely to miss (`python 3.13 /
     windows-latest`, run 32920776193). Reading it afterwards makes the cleanup
     independent of which of the two won the race.
+
+    `report_s` is how long that read waits for a name to appear. The default is
+    the "there may be nothing at all to kill" budget; a caller that *knows* one
+    is coming -- the orphan handshake in `_spawn_parent_with_a_child` -- passes
+    a longer one, because there the pid is the point of the test rather than a
+    contingency.
     """
     compare.kill_tree(proc)
     pids = [] if child_pid is None else [child_pid]
     if ready is not None:
         late = _read_pid(ready)
-        deadline = time.monotonic() + _ORPHAN_REPORT_S
+        deadline = time.monotonic() + report_s
         while late is None and time.monotonic() < deadline:
             time.sleep(0.05)
             late = _read_pid(ready)
@@ -322,25 +362,53 @@ def _spawn_parent_with_a_child(
     from and `os.getpgid` raises into a `pass` -- so it is reachable only through
     the pid it has not written yet. That is the interleaving that turned this
     file's Windows CI job red; see the test that uses it.
+
+    In that mode the child does **not** name itself when it is spawned: it waits
+    for the `go` file, which is written on the failure path below and nowhere
+    else. Without that handshake the readiness loop is a race between two events
+    -- the helper's exit and the ready file -- and the loop reads the file at the
+    bottom of an iteration but polls the helper at the top, so a child quick
+    enough to write inside one 50 ms tick makes the loop return *normally* and
+    the caller's `pytest.raises` sees nothing raised. That is not a hypothetical
+    either: locally the exit won every time and on `python 3.11 /
+    windows-latest` (run 32964827882) the file did, "DID NOT RAISE". With the
+    handshake the ready file cannot exist until after the AssertionError has
+    been raised, which is what the caller is there to prove.
     """
     ready = tmp_path / "ready"
-    # `sys.argv[1]` carries the path, so neither level has to quote the other's.
-    sleeper = (
-        "import os, pathlib, sys, time\n"
-        "pathlib.Path(sys.argv[1]).write_text(str(os.getpid()))\n"
-        "time.sleep(300)\n"
-    )
+    go = tmp_path / "go"
+    # `sys.argv[1]` carries the ready path and `sys.argv[2]` the go path, so no
+    # level has to quote another's.
+    if orphan_the_child:
+        sleeper = (
+            "import os, pathlib, sys, time\n"
+            "go = pathlib.Path(sys.argv[2])\n"
+            # A go file that never arrives means the caller died some other way:
+            # leave nothing behind rather than a 300-second sleeper no file names.
+            "deadline = time.monotonic() + 120\n"
+            "while not go.exists():\n"
+            "    if time.monotonic() > deadline:\n"
+            "        raise SystemExit(0)\n"
+            "    time.sleep(0.02)\n"
+            "pathlib.Path(sys.argv[1]).write_text(str(os.getpid()))\n"
+            "time.sleep(300)\n"
+        )
+    else:
+        sleeper = (
+            "import os, pathlib, sys, time\n"
+            "pathlib.Path(sys.argv[1]).write_text(str(os.getpid()))\n"
+            "time.sleep(300)\n"
+        )
     code = (
         "import subprocess, sys, time\n"
-        f"subprocess.Popen([sys.executable, '-c', {sleeper!r}, {str(ready)!r}])\n"
+        f"subprocess.Popen([sys.executable, '-c', {sleeper!r}, {str(ready)!r}, {str(go)!r}])\n"
         + ("" if orphan_the_child else "time.sleep(300)\n")
     )
-    session = {} if os.name == "nt" else {"start_new_session": True}
     proc = subprocess.Popen(
         [sys.executable, "-c", code],
         stdout=subprocess.PIPE,
         stderr=subprocess.DEVNULL,
-        **session,
+        **_OWN_SESSION,
     )
     try:
         deadline = time.monotonic() + ready_timeout
@@ -358,7 +426,24 @@ def _spawn_parent_with_a_child(
         # still alive, everything under it; the child names itself in the ready
         # file, which `_reap` reads *after* the kill -- it may not have got that
         # far yet at the moment this failure was raised.
-        _reap(_load("compare"), proc, ready=ready)
+        #
+        # The go file is that "not yet" made deliberate: an orphaned child is
+        # waiting on it and names itself only once it appears, so the ready file
+        # is guaranteed to arrive after this failure rather than merely likely
+        # to. It is released here, before the cleanup that has to find the pid,
+        # and the wait for that pid is the long one -- a name is coming, and
+        # missing it would leak the sleeper the caller then asserts is dead.
+        go.touch()
+        # Only the orphan mode is owed the long wait: there a name is certain to
+        # come. Everywhere else the helper may well have died before its child
+        # ran at all, and waiting a minute for a name that is never coming would
+        # put that minute into every run of the suite.
+        _reap(
+            _load("compare"),
+            proc,
+            ready=ready,
+            report_s=_ORPHAN_HANDSHAKE_S if orphan_the_child else _ORPHAN_REPORT_S,
+        )
         raise
 
 
@@ -503,6 +588,13 @@ def test_a_child_that_names_itself_after_the_failure_is_still_killed(tmp_path):
     same unreachability came out of `taskkill /T` enumerating the tree
     microseconds before the child entered it; the consequence, and the fix, are
     the same.
+
+    "Has not written yet" is enforced, not hoped for. The orphan waits for a go
+    file that only the failure path writes, so the readiness loop below cannot
+    see a ready file at all -- it can only ever see the helper's exit, which is
+    the failure this asserts on. The first version of this test left that to
+    timing and passed locally on the exit and failed on `python 3.11 /
+    windows-latest` (run 32964827882) on the file, "DID NOT RAISE".
     """
     _load("compare")  # skips the test where bench/ is not present
 
@@ -642,6 +734,16 @@ def test_run_cell_kills_the_worker_tree_on_any_exception_not_just_a_timeout(tmp_
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         text=True,
+        # What `run_cell` itself passes, and the reason this test stands in for
+        # it: the real worker gets a session of its own, and only such a
+        # process has a group `kill_tree` may kill. Spawned without it this
+        # stand-in stayed in pytest's group, and `kill_tree`'s POSIX arm --
+        # never once executed before CI, every developer machine here being
+        # Windows -- SIGKILLed pytest, its shell and the GitHub runner's job
+        # process along with the sleeper. All twelve Linux and macOS cells died
+        # that way: no log, `Build and test` frozen `in_progress`, the job
+        # cancelled 45 minutes later.
+        **_OWN_SESSION,
     )
     killed = []
     real_kill_tree = compare.kill_tree
