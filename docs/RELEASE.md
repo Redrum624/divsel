@@ -93,9 +93,10 @@ and the installability matrix artifact from the `install-matrix.yml` run.
 
 ## 7. Post-release
 
-Re-run `.github/workflows/install-matrix.yml` (workflow_dispatch) so the divsel column
-fills for Linux/macOS, and paste the assembled table into `docs/benchmarks/README.md`
-(the 32 pending cells noted there).
+Re-run `.github/workflows/install-matrix.yml` (workflow_dispatch) against the release tag so
+the matrix reflects the published wheel rather than a `pip install .` of the checkout, and
+refresh the assembled table in `docs/benchmarks/README.md`. All 48 cells are already measured
+for the branch; this re-run is about the published artifact, not about filling gaps.
 
 ---
 

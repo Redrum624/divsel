@@ -436,6 +436,9 @@ _STALE_CI_CLAIMS = (
     "the workflow itself has not run",
     "not run yet",
     "never been through CI",
+    "cells pending",
+    "pending the CI run",
+    "pending CI run",
 )
 
 _CI_DOCS = ("docs/RELEASE.md", "docs/benchmarks/README.md", "README.md")

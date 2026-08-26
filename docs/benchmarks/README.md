@@ -89,7 +89,7 @@ platform … the wheel was built for the stable ABI (abi3), which requires a GIL
 That is expected (`python/divsel/_divsel.pyi` says free-threaded CPython needs a separate `cp314t` build),
 and it is why the 3.14 column above was re-created from the GIL interpreter explicitly.
 
-### Linux and macOS: pending CI run
+### Linux and macOS: measured on CI
 
 `.github/workflows/install-matrix.yml` runs the same four installs for `ubuntu-latest`, `windows-latest`
 and `macos-latest` × Python 3.11/3.12/3.13/3.14 with `pip` in a fresh `python -m venv` per library
