@@ -235,7 +235,27 @@ def _force_kill(pid: int) -> None:
         pass
 
 
-def _reap(compare, proc, child_pid=None) -> None:
+# How long a killed helper's child is given to name itself. The wait is spent
+# only when no name ever arrives, which is also the case where nothing was left
+# to kill; when there is an orphan the poll returns as soon as it writes, in a
+# few hundred ms. Generous enough for a cold interpreter on a loaded runner --
+# which is the machine this whole path exists for.
+_ORPHAN_REPORT_S = 5.0
+
+
+def _read_pid(ready: Path) -> int | None:
+    """The pid in the ready file, or `None` if it is not (fully) there yet.
+
+    The file is created and then written, so a reader can catch it existing and
+    empty: `None` means "ask again", not "there is no child".
+    """
+    try:
+        return int(ready.read_text())
+    except (OSError, ValueError):
+        return None
+
+
+def _reap(compare, proc, child_pid=None, ready=None) -> None:
     """Leave nothing behind: the tree, then the orphan, then the pipe.
 
     Order matters. `kill_tree` walks from the parent, so it is a no-op once the
@@ -243,10 +263,30 @@ def _reap(compare, proc, child_pid=None) -> None:
     creates on purpose -- and the grandchild then has to be killed by pid. The
     stdout pipe is closed last, after its holders are gone, so a drain thread's
     `read()` returns instead of blocking on a pipe nobody will ever close.
+
+    The orphan can be named two ways. A caller that got a pid back from
+    `_spawn_parent_with_a_child` passes it as `child_pid`; a caller cleaning up a
+    *failure* has no pid at all and passes `ready`, the path the child writes its
+    own pid to. `ready` is read here, after `kill_tree`, and never before: the
+    child names itself a moment after it is spawned, so a failure raised in that
+    window sees no file, and a pid read before the kill would be `None` for
+    exactly the process the tree walk is most likely to miss (`python 3.13 /
+    windows-latest`, run 32920776193). Reading it afterwards makes the cleanup
+    independent of which of the two won the race.
     """
     compare.kill_tree(proc)
-    if child_pid is not None and _pid_is_alive(child_pid):
-        _force_kill(child_pid)
+    pids = [] if child_pid is None else [child_pid]
+    if ready is not None:
+        late = _read_pid(ready)
+        deadline = time.monotonic() + _ORPHAN_REPORT_S
+        while late is None and time.monotonic() < deadline:
+            time.sleep(0.05)
+            late = _read_pid(ready)
+        if late is not None:
+            pids.append(late)
+    for pid in pids:
+        if _pid_is_alive(pid):
+            _force_kill(pid)
     try:
         proc.wait(timeout=30)
     except subprocess.TimeoutExpired:  # pragma: no cover - the OS refused a kill
@@ -258,7 +298,9 @@ def _reap(compare, proc, child_pid=None) -> None:
             pass
 
 
-def _spawn_parent_with_a_child(tmp_path, ready_timeout: float = 60.0):
+def _spawn_parent_with_a_child(
+    tmp_path, ready_timeout: float = 60.0, orphan_the_child: bool = False
+):
     """A process that spawns one child and waits, both holding our stdout pipe.
 
     Returns `(proc, child_pid)`: the child's pid travels back through the ready
@@ -267,13 +309,31 @@ def _spawn_parent_with_a_child(tmp_path, ready_timeout: float = 60.0):
     it already spawned are killed here -- the caller's `finally` is only entered
     once this function has returned, so a readiness check that fails on a loaded
     runner used to leak both processes for 300 seconds.
+
+    The *child* writes the ready file, not the helper: a helper killed between
+    its `Popen` and a write of its own would leave a live process that no file
+    ever names, and the failure path below has nothing but that file to go on.
+    Readiness therefore means "the child is running", which is what both callers
+    actually want to know.
+
+    `orphan_the_child=True` makes the helper exit as soon as it has spawned. The
+    child then survives with a parent that no longer exists, the one state
+    `kill_tree` provably cannot clean up -- `taskkill /T` has no live pid to walk
+    from and `os.getpgid` raises into a `pass` -- so it is reachable only through
+    the pid it has not written yet. That is the interleaving that turned this
+    file's Windows CI job red; see the test that uses it.
     """
     ready = tmp_path / "ready"
-    code = (
-        "import pathlib, subprocess, sys, time\n"
-        "child = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(300)'])\n"
-        f"pathlib.Path({str(ready)!r}).write_text(str(child.pid))\n"
+    # `sys.argv[1]` carries the path, so neither level has to quote the other's.
+    sleeper = (
+        "import os, pathlib, sys, time\n"
+        "pathlib.Path(sys.argv[1]).write_text(str(os.getpid()))\n"
         "time.sleep(300)\n"
+    )
+    code = (
+        "import subprocess, sys, time\n"
+        f"subprocess.Popen([sys.executable, '-c', {sleeper!r}, {str(ready)!r}])\n"
+        + ("" if orphan_the_child else "time.sleep(300)\n")
     )
     session = {} if os.name == "nt" else {"start_new_session": True}
     proc = subprocess.Popen(
@@ -284,19 +344,21 @@ def _spawn_parent_with_a_child(tmp_path, ready_timeout: float = 60.0):
     )
     try:
         deadline = time.monotonic() + ready_timeout
-        while not ready.exists() and time.monotonic() < deadline:
+        pid = _read_pid(ready)
+        while pid is None and time.monotonic() < deadline:
             if proc.poll() is not None:
                 raise AssertionError("the helper process exited early")
             time.sleep(0.05)
-        assert ready.exists(), "the helper never started its child"
-        return proc, int(ready.read_text())
+            pid = _read_pid(ready)
+        assert pid is not None, "the helper never started its child"
+        return proc, pid
     except BaseException:
         # Nothing has been handed to the caller, so this is the only cleanup
         # there will ever be: `kill_tree` takes the helper and, while it is
-        # still alive, everything under it; the ready file names the child if it
-        # got that far.
-        pid = int(ready.read_text()) if ready.exists() else None
-        _reap(_load("compare"), proc, pid)
+        # still alive, everything under it; the child names itself in the ready
+        # file, which `_reap` reads *after* the kill -- it may not have got that
+        # far yet at the moment this failure was raised.
+        _reap(_load("compare"), proc, ready=ready)
         raise
 
 
@@ -400,13 +462,62 @@ def test_a_helper_that_never_reports_ready_is_not_left_behind(tmp_path, monkeypa
     assert helpers[0].returncode is not None, "the helper was left running"
     assert helpers[0].stdout is None or helpers[0].stdout.closed
 
+    # Which of the two outcomes below happens is the runner's timing, not this
+    # test's: the helper is killed while it is still starting up.
     ready = tmp_path / "ready"
-    if ready.exists():  # it got as far as spawning the sleeper
-        pid = int(ready.read_text())
+    pid = _read_pid(ready)
+    if pid is not None:  # it got as far as spawning the sleeper
         deadline = time.monotonic() + 30
         while _pid_is_alive(pid) and time.monotonic() < deadline:
             time.sleep(0.05)
-        assert not _pid_is_alive(pid), "the helper's child outlived the failure"
+        outlived = _pid_is_alive(pid)
+        if outlived:  # a red run must not leave the sleeper behind either
+            _force_kill(pid)
+        assert not outlived, "the helper's child outlived the failure"
+    else:
+        # A pass, deliberately -- not a branch that skipped by accident, and not
+        # one that hides a leak. The cleanup has already waited
+        # `_ORPHAN_REPORT_S` for a name to appear; a child that is alive writes
+        # one within microseconds of creating the file, so no name after that
+        # means the helper was killed before its child could run (or the child
+        # died mid-write) and there is nothing left to kill. There is no pid to
+        # assert on here, by construction -- the test below forces the branch
+        # that has one, on every platform, on every run.
+        pass
+
+
+def test_a_child_that_names_itself_after_the_failure_is_still_killed(tmp_path):
+    """The interleaving that turned `python 3.13 / windows-latest` red.
+
+    The child writes the ready file a moment *after* it is spawned, so a failure
+    raised inside that window sees no file. The cleanup used to read the pid
+    before killing anything, get `None` there, and fall back to `kill_tree`
+    alone -- which walks the tree as it stands at that instant and misses a child
+    that is not in it yet. The runner kept a 300-second sleeper, and the test
+    above found it 30 seconds later: alive, and named by a file that had since
+    appeared.
+
+    Forcing the same state deterministically, on every platform: the helper exits
+    the moment it has spawned, so `kill_tree` has no live parent to walk from and
+    the child is reachable only through a pid it has not written yet. On CI the
+    same unreachability came out of `taskkill /T` enumerating the tree
+    microseconds before the child entered it; the consequence, and the fix, are
+    the same.
+    """
+    _load("compare")  # skips the test where bench/ is not present
+
+    ready = tmp_path / "ready"
+    with pytest.raises(AssertionError, match="exited early"):
+        _spawn_parent_with_a_child(tmp_path, ready_timeout=30.0, orphan_the_child=True)
+
+    # Not a test that can pass by never starting anything: the child really was
+    # spawned, really was orphaned, and really did name itself -- afterwards.
+    pid = _read_pid(ready)
+    assert pid is not None, "the orphan never named itself; nothing was proven"
+    outlived = _pid_is_alive(pid)
+    if outlived:  # a red run must not leave the sleeper behind either
+        _force_kill(pid)
+    assert not outlived, "the orphaned child outlived the failure"
 
 
 def test_run_cell_reports_a_timeout_and_leaves_no_reader_behind(monkeypatch):
