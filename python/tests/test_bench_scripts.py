@@ -17,6 +17,7 @@ from __future__ import annotations
 import importlib.util
 import json
 import os
+import signal
 import subprocess
 import sys
 import threading
@@ -201,13 +202,76 @@ def test_merge_into_updates_by_key_and_truncates_long_selections(tmp_path):
     assert json.loads(out.read_text(encoding="utf-8")) == second
 
 
-def _spawn_parent_with_a_child(tmp_path):
-    """A process that spawns one child and waits, both holding our stdout pipe."""
+def _pid_is_alive(pid: int) -> bool:
+    """Cross-platform "is this pid still running", for pids we do not own."""
+    if os.name == "nt":
+        out = subprocess.run(
+            ["tasklist", "/FI", f"PID eq {pid}", "/NH"],
+            capture_output=True,
+            text=True,
+            check=False,
+        ).stdout
+        return str(pid) in out
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:  # pragma: no cover - alive, owned by someone else
+        return True
+    return True
+
+
+def _force_kill(pid: int) -> None:
+    """Kill one pid directly, for a descendant `kill_tree` can no longer reach."""
+    if os.name == "nt":
+        subprocess.run(
+            ["taskkill", "/F", "/PID", str(pid)], capture_output=True, check=False
+        )
+        return
+    try:
+        os.kill(pid, signal.SIGKILL)
+    except (ProcessLookupError, PermissionError):  # pragma: no cover
+        pass
+
+
+def _reap(compare, proc, child_pid=None) -> None:
+    """Leave nothing behind: the tree, then the orphan, then the pipe.
+
+    Order matters. `kill_tree` walks from the parent, so it is a no-op once the
+    parent has been reaped -- which is exactly the state the control block below
+    creates on purpose -- and the grandchild then has to be killed by pid. The
+    stdout pipe is closed last, after its holders are gone, so a drain thread's
+    `read()` returns instead of blocking on a pipe nobody will ever close.
+    """
+    compare.kill_tree(proc)
+    if child_pid is not None and _pid_is_alive(child_pid):
+        _force_kill(child_pid)
+    try:
+        proc.wait(timeout=30)
+    except subprocess.TimeoutExpired:  # pragma: no cover - the OS refused a kill
+        pass
+    if proc.stdout is not None and not proc.stdout.closed:
+        try:
+            proc.stdout.close()
+        except (OSError, ValueError):  # pragma: no cover - a reader owns it
+            pass
+
+
+def _spawn_parent_with_a_child(tmp_path, ready_timeout: float = 60.0):
+    """A process that spawns one child and waits, both holding our stdout pipe.
+
+    Returns `(proc, child_pid)`: the child's pid travels back through the ready
+    file, because a caller that reaps `proc` first (the control below does) can
+    no longer reach the child through it. On any failure the helper and whatever
+    it already spawned are killed here -- the caller's `finally` is only entered
+    once this function has returned, so a readiness check that fails on a loaded
+    runner used to leak both processes for 300 seconds.
+    """
     ready = tmp_path / "ready"
     code = (
         "import pathlib, subprocess, sys, time\n"
-        "subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(300)'])\n"
-        f"pathlib.Path({str(ready)!r}).write_text('up')\n"
+        "child = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(300)'])\n"
+        f"pathlib.Path({str(ready)!r}).write_text(str(child.pid))\n"
         "time.sleep(300)\n"
     )
     session = {} if os.name == "nt" else {"start_new_session": True}
@@ -217,20 +281,32 @@ def _spawn_parent_with_a_child(tmp_path):
         stderr=subprocess.DEVNULL,
         **session,
     )
-    deadline = time.monotonic() + 60
-    while not ready.exists() and time.monotonic() < deadline:
-        if proc.poll() is not None:
-            raise AssertionError("the helper process exited early")
-        time.sleep(0.05)
-    assert ready.exists(), "the helper never started its child"
-    return proc
+    try:
+        deadline = time.monotonic() + ready_timeout
+        while not ready.exists() and time.monotonic() < deadline:
+            if proc.poll() is not None:
+                raise AssertionError("the helper process exited early")
+            time.sleep(0.05)
+        assert ready.exists(), "the helper never started its child"
+        return proc, int(ready.read_text())
+    except BaseException:
+        # Nothing has been handed to the caller, so this is the only cleanup
+        # there will ever be: `kill_tree` takes the helper and, while it is
+        # still alive, everything under it; the ready file names the child if it
+        # got that far.
+        pid = int(ready.read_text()) if ready.exists() else None
+        _reap(_load("compare"), proc, pid)
+        raise
 
 
-def _pipe_closes_within(proc, seconds: float) -> bool:
-    """True when every holder of `proc`'s stdout pipe is gone within `seconds`.
+def _pipe_closes_within(proc, seconds: float):
+    """`(closed, reader)`: did every holder of `proc`'s stdout pipe go away?
 
     The child inherits the parent's stdout, so the read only returns once BOTH
     have exited -- which is exactly the question "did the descendants die too?".
+    The reader thread is returned so a caller can join it after the cleanup that
+    lets it finish: it is a daemon, but until `read()` returns it holds the pipe
+    and a reference to the tree for the rest of the session.
     """
     done = threading.Event()
 
@@ -240,8 +316,9 @@ def _pipe_closes_within(proc, seconds: float) -> bool:
         finally:
             done.set()
 
-    threading.Thread(target=drain, daemon=True).start()
-    return done.wait(seconds)
+    thread = threading.Thread(target=drain, daemon=True)
+    thread.start()
+    return done.wait(seconds), thread
 
 
 def test_kill_tree_takes_the_workers_descendants_too(tmp_path):
@@ -259,21 +336,108 @@ def test_kill_tree_takes_the_workers_descendants_too(tmp_path):
     # spawned anything.
     control_dir = tmp_path / "control"
     control_dir.mkdir()
-    control = _spawn_parent_with_a_child(control_dir)
+    control, control_child = _spawn_parent_with_a_child(control_dir)
     try:
         control.kill()
         control.wait(timeout=30)
-        assert not _pipe_closes_within(control, 5), (
+        closed, drain = _pipe_closes_within(control, 5)
+        assert not closed, (
             "the helper's child did not outlive a plain kill(); the test below "
             "would prove nothing"
         )
     finally:
-        compare.kill_tree(control)
+        # `kill_tree(control)` alone cannot clean this up: `control` has been
+        # reaped, so `taskkill /T` has no pid to walk from and `os.getpgid`
+        # raises ProcessLookupError into a `pass`. The orphan this block creates
+        # on purpose has to be killed by pid, or every run of `pytest
+        # python/tests` leaves a 300-second sleeper and its pipe behind.
+        _reap(compare, control, control_child)
+    drain.join(30)
+    assert not drain.is_alive(), (
+        "the control's descendants outlived the test: something still holds the "
+        "pipe, so the tree this test orphaned on purpose is still running"
+    )
+    assert not _pid_is_alive(control_child), "the control's child was left running"
 
-    proc = _spawn_parent_with_a_child(tmp_path)
-    compare.kill_tree(proc)
-    assert _pipe_closes_within(proc, 60), (
-        "a descendant of the worker survived kill_tree"
+    proc, child = _spawn_parent_with_a_child(tmp_path)
+    try:
+        compare.kill_tree(proc)
+        closed, drain = _pipe_closes_within(proc, 60)
+        assert closed, "a descendant of the worker survived kill_tree"
+    finally:
+        _reap(compare, proc, child)
+    drain.join(30)
+
+
+def test_a_helper_that_never_reports_ready_is_not_left_behind(tmp_path, monkeypatch):
+    """The helper's own failure path is the only cleanup it will ever get.
+
+    `_spawn_parent_with_a_child` raises *before* returning, so the caller's
+    `finally` is never entered: on a loaded runner, where the helper needs
+    longer than the readiness deadline, the helper and the 300-second sleeper
+    under it were both left running, holding a pipe nobody reads. Forcing the
+    deadline to zero reproduces that without waiting a minute for it.
+    """
+    _load("compare")  # skips the test where bench/ is not present
+
+    spawned = []
+    real_popen = subprocess.Popen
+
+    def recording(*args, **kwargs):
+        proc = real_popen(*args, **kwargs)
+        spawned.append(proc)
+        return proc
+
+    monkeypatch.setattr(subprocess, "Popen", recording)
+
+    with pytest.raises(AssertionError, match="never started its child"):
+        _spawn_parent_with_a_child(tmp_path, ready_timeout=0.0)
+
+    # `kill_tree` shells out to taskkill on Windows, which is a Popen too.
+    helpers = [pr for pr in spawned if pr.args and pr.args[0] == sys.executable]
+    assert len(helpers) == 1, "the helper is the only interpreter this test starts"
+    assert helpers[0].returncode is not None, "the helper was left running"
+    assert helpers[0].stdout is None or helpers[0].stdout.closed
+
+    ready = tmp_path / "ready"
+    if ready.exists():  # it got as far as spawning the sleeper
+        pid = int(ready.read_text())
+        deadline = time.monotonic() + 30
+        while _pid_is_alive(pid) and time.monotonic() < deadline:
+            time.sleep(0.05)
+        assert not _pid_is_alive(pid), "the helper's child outlived the failure"
+
+
+def test_run_cell_reports_a_timeout_and_leaves_no_reader_behind(monkeypatch):
+    """The timeout branch of ``run_cell``: nothing drove it before.
+
+    Two things are checked. (1) The record: `status`, a `reason` that says the
+    descendants went too, and `worker_wall_s`, which every other status carries
+    and this one used to drop. (2) The pipes: CPython's Windows
+    `Popen._communicate` leaves its two reader threads running and the fds open
+    on a `TimeoutExpired` ("in case the user calls communicate again"), so a
+    branch that kills the tree and returns without a second `communicate()`
+    leaks a blocked thread per timed-out cell -- inside the process that is
+    measuring peak RSS.
+    """
+    compare = _load("compare")
+    monkeypatch.setattr(compare, "TIMEOUT_GRACE_S", 1)
+    args = SimpleNamespace(runs=1, timeout=0)
+
+    before = threading.active_count()
+    # 200 000 points with the exact O(n^2) diameter cannot finish in a second.
+    r = compare.run_cell("divsel", 200_000, 64, 5, "linear", args, "exact")
+
+    assert r["status"] == "timeout", r
+    assert "descendants" in r["reason"]
+    assert r["worker_wall_s"] > 0.0
+    assert (r["n"], r["dim"], r["k"]) == (200_000, 64, 5)
+
+    deadline = time.monotonic() + 30
+    while threading.active_count() > before and time.monotonic() < deadline:
+        time.sleep(0.05)
+    assert threading.active_count() <= before, (
+        "a pipe reader outlived the timed-out cell"
     )
 
 

@@ -472,6 +472,12 @@ def worker(args) -> dict:
 # --------------------------------------------------------------------------------------------------
 
 
+# Slack added to a cell's own timeout before the driver stops waiting: the
+# worker has to import numpy, build its fixture and print its record after the
+# last measured run. A test overrides it to drive the timeout branch.
+TIMEOUT_GRACE_S = 120
+
+
 def kill_tree(proc: subprocess.Popen) -> None:
     """Kill `proc` **and everything it spawned**.
 
@@ -566,7 +572,7 @@ def run_cell(method: str, n: int, dim: int, k: int, utility: str, args, diameter
         "--diameter",
         diameter,
     ]
-    hard_limit = args.timeout * (args.runs + 1) + 120
+    hard_limit = args.timeout * (args.runs + 1) + TIMEOUT_GRACE_S
     base = {"n": n, "dim": dim, "k": k, "utility": utility, "method": method}
     t0 = time.perf_counter()
     # Its own session (POSIX) so a timeout can take the whole process group; on
@@ -583,10 +589,29 @@ def run_cell(method: str, n: int, dim: int, k: int, utility: str, args, diameter
         stdout, stderr = proc.communicate(timeout=hard_limit)
     except subprocess.TimeoutExpired:
         kill_tree(proc)
+        # CPython documents the leak this closes, in `Popen._communicate`: "If
+        # we time out, the threads remain reading and the fds left open in case
+        # the user calls communicate again." Nothing here will, so the second
+        # call is made now -- with the tree already dead it returns at once --
+        # and the pipes are closed behind it. Without it every timed-out cell
+        # leaves a reader thread blocked on a pipe whose last holder is a
+        # descendant `kill_tree` could not reach, in the process that reports
+        # peak RSS.
+        try:
+            proc.communicate(timeout=30)
+        except (subprocess.TimeoutExpired, ValueError):  # pragma: no cover
+            pass
+        for pipe in (proc.stdout, proc.stderr):
+            if pipe is not None and not pipe.closed:
+                try:
+                    pipe.close()
+                except OSError:  # pragma: no cover
+                    pass
         return {
             **base,
             "status": "timeout",
             "reason": f"worker and its descendants killed after {hard_limit} s",
+            "worker_wall_s": time.perf_counter() - t0,
         }
     elapsed = time.perf_counter() - t0
     if proc.returncode != 0:
