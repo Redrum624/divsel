@@ -84,8 +84,11 @@ def gist_select(
             about 17.5 bytes per item id of peak working set. Ids must therefore
             be dense: one stray sparse id sets the footprint for the whole call
             (``2**24`` costs roughly 280 MB, ``2**31`` roughly 36 GB, which will
-            abort the process). Ids above ``2**32 - 1``, or a universe that does
-            not fit the platform's ``usize``, raise ``ValueError``. For
+            abort the process). Ids above ``2**32 - 1`` -- of any magnitude,
+            including ones too large for a signed 64-bit integer -- or a
+            universe that does not fit the platform's ``usize``, raise
+            ``ValueError`` naming the row, never ``OverflowError`` and never
+            ``TypeError``. For
             ``"facility_location"``, must be ``None``.
         k: The budget; ``|S| <= k``. Must be an ``int`` greater than zero:
             ``k <= 0`` raises ``ValueError``, a ``bool`` raises ``TypeError``

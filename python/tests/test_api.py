@@ -447,6 +447,29 @@ def test_coverage_item_id_above_u32_max_raises_valueerror():
         gist_select(x, [[0], [2**32]], k=1, utility="coverage")
 
 
+def test_coverage_item_id_above_i64_max_is_the_same_valueerror():
+    """An id too large for `i64` is a range error, not a type error.
+
+    `_divsel.pyi` promises `ValueError` for "Ids above 2**32 - 1" and reserves
+    `TypeError` for "a coverage `utilities` is not a sequence of int sequences".
+    A blanket `map_err` turned the extraction's `OverflowError` into that
+    `TypeError`, whose message ("must be a sequence of sequences of
+    non-negative int item ids") is also false for `[[0], [2**200]]` -- which is
+    exactly such a sequence. Same rule as `k`/`diameter_sweeps`: the error keys
+    on the range, whatever int-like the id arrived as.
+    """
+    x = _random_vectors(2, 2)
+    for oversized in (2**200, 2**64, -(2**200)):
+        with pytest.raises(ValueError, match=r"row 1 must be a non-negative int"):
+            gist_select(x, [[0], [oversized]], k=1, utility="coverage")
+
+    # A genuinely wrong element type is still a TypeError.
+    with pytest.raises(TypeError, match="sequence of sequences"):
+        gist_select(x, [[0], ["nope"]], k=1, utility="coverage")
+    # numpy integer scalars are ints for this purpose, in range and out of it.
+    assert gist_select(x, [[np.uint32(0)], [np.int64(3)]], k=1, utility="coverage")
+
+
 # --- round-2 gaps ------------------------------------------------------------
 
 # A 12x3 Gaussian set on which the farthest-point walk needs four double sweeps

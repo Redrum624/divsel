@@ -154,7 +154,9 @@ fn linear_weights(utilities: Option<&Bound<'_, PyAny>>) -> PyResult<Option<Vec<f
 /// The `utilities` argument for `utility="coverage"`: a sequence of sequences
 /// of non-negative ints, returned with the inferred universe (the largest id
 /// plus one; `0` when every list is empty). Negative or oversized ids are a
-/// `ValueError` naming the row, and so is a universe that does not fit `usize`
+/// `ValueError` naming the row -- **including** an id too large for `i64`,
+/// which is a range error like any other and not a claim that the argument was
+/// not a nested sequence -- and so is a universe that does not fit `usize`
 /// (only reachable on a 32-bit target); anything that is not such a nested
 /// sequence is a `TypeError`.
 ///
@@ -172,20 +174,38 @@ fn coverage_sets(utilities: Option<&Bound<'_, PyAny>>) -> PyResult<(Vec<Vec<u32>
              one per vector",
         ));
     };
-    let rows: Vec<Vec<i64>> = obj
+    // The ids are extracted one at a time, as objects, so that an id which is a
+    // perfectly good Python `int` but does not fit `i64` is the range error it
+    // is. Extracting `Vec<Vec<i64>>` in one go raises `OverflowError` there, and
+    // mapping that to `COVERAGE_TYPE_ERROR` claimed `[[0], [2**200]]` is not a
+    // sequence of int sequences -- which it is. Same rule as `budget`: the error
+    // keys on the exception, not on the argument's type, so every int-like
+    // Python accepts (a numpy scalar, anything with `__index__`) is reported the
+    // same way.
+    let rows: Vec<Vec<Bound<'_, PyAny>>> = obj
         .extract()
         .map_err(|_| PyTypeError::new_err(COVERAGE_TYPE_ERROR))?;
     let mut sets = Vec::with_capacity(rows.len());
     for (row, items) in rows.into_iter().enumerate() {
         let mut set = Vec::with_capacity(items.len());
         for item in items {
-            let id = u32::try_from(item).map_err(|_| {
+            let out_of_range = || {
                 PyValueError::new_err(format!(
-                    "coverage item id {item} at row {row} must be a non-negative int no larger \
+                    "coverage item id {} at row {row} must be a non-negative int no larger \
                      than {}",
+                    item.str()
+                        .map_or_else(|_| "<unprintable>".to_owned(), |text| text.to_string()),
                     u32::MAX
                 ))
-            })?;
+            };
+            let value = match item.extract::<i64>() {
+                Ok(value) => value,
+                Err(err) if err.is_instance_of::<PyOverflowError>(item.py()) => {
+                    return Err(out_of_range())
+                }
+                Err(_) => return Err(PyTypeError::new_err(COVERAGE_TYPE_ERROR)),
+            };
+            let id = u32::try_from(value).map_err(|_| out_of_range())?;
             set.push(id);
         }
         sets.push(set);

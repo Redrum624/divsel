@@ -207,7 +207,9 @@ citation matters more than an impressive one.
     binding-level **`[divsel choice]`** for both, since the core's `k` and
     `sweeps` are plain `usize`. A value of either that does not fit a signed
     64-bit integer is a `ValueError`, never an `OverflowError`, whatever
-    int-like it arrived as. (No fixture
+    int-like it arrived as; the same holds for a **coverage item id** outside
+    `[0, 2**32 - 1]`, which is a range error naming its row and never a
+    `TypeError` about the shape of the argument. (No fixture
     exercises an error — every case is a valid input — so a port must reject
     these on its own.)
 14. **Cosine rows are L2-normalised on construction**; a row that cannot be
