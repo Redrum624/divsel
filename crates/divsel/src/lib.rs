@@ -15,6 +15,10 @@
 //!
 //! let out = gist(&pts, &mut util, &cfg)?;
 //! assert!(out.selected.len() <= 3);
+//! // The identity holds for every `lambda > 0`. At `lambda == 0` the core adds
+//! // a literal `0.0` instead of forming the product, which differs from
+//! // `0.0 * div` exactly when `div` is infinite; see `GistResult::f_value` and
+//! // `docs/CONFORMANCE.md` rule 18.
 //! assert_eq!(out.f_value, out.g_value + cfg.lambda * f64::from(out.div));
 //! # Ok::<(), divsel::DivselError>(())
 //! ```

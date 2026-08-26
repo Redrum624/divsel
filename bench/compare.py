@@ -155,7 +155,9 @@ def evaluate(
     else:
         div = None
         div_note = f"|S| <= 1 at n > {EXACT_DIAMETER_MAX_N}: diameter scan skipped"
-    f = None if div is None else g + lam * div
+    # `lam == 0` contributes a literal 0.0, exactly as the core does
+    # (docs/CONFORMANCE.md rule 18): `div` can be +inf and `0.0 * inf` is nan.
+    f = None if div is None else (g if lam == 0.0 else g + lam * div)
     return {"f": f, "g": g, "div": div, "size": len(sel), "div_note": div_note}
 
 

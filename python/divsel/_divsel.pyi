@@ -19,7 +19,10 @@ class GistResult(TypedDict):
     selected: list[int]
     """The selected row indices, in selection order; at most ``k`` of them."""
     f_value: float
-    """``g(S) + lam * div(S)``, the value that was maximized."""
+    """``g(S) + lam * div(S)``, the value that was maximized.
+
+    ``lam == 0`` contributes exactly ``0.0``, not ``0.0 * div``: see
+    :func:`gist_select_full` for when the two differ."""
     g_value: float
     """``g(S)`` alone."""
     div: float
@@ -128,8 +131,12 @@ def gist_select(
             be an ``int`` ``>= 0`` (a negative value raises ``ValueError``, and
             so does one too large for a signed 64-bit integer; a ``bool`` raises
             ``TypeError``, exactly as for ``k``); ``0`` is treated as ``1``;
-            ignored under ``"exact"``. No upper bound is enforced: each sweep
-            costs ``O(n * d)``, so a very large value simply runs that long.
+            ignored under ``"exact"``. A value above ``len(vectors)`` is treated
+            as ``len(vectors)``: each sweep starts where the previous one ended,
+            so the sequence of starting points repeats within ``n`` steps and no
+            later sweep can change the answer. The clamp is result-preserving --
+            it is there so that ``diameter_sweeps=2**62`` costs ``n`` sweeps
+            instead of never returning.
 
     Returns:
         The selected row indices, in selection order, at most ``k`` of them.
@@ -181,8 +188,17 @@ def gist_select_full(
     :class:`GistResult` dict with ``selected`` (the same list), ``f_value``,
     ``g_value``, ``div``, ``threshold``, ``stage`` and ``d_max``, so the split of
     the objective and which branch of Algorithm 1 produced the answer are
-    observable. ``f_value == g_value + lam * div`` holds exactly (the same
-    double-precision arithmetic the Rust core performs).
+    observable.
+
+    ``f_value == g_value + lam * div`` holds exactly -- the same
+    double-precision arithmetic the Rust core performs -- **except at
+    ``lam == 0``, where the core adds a literal ``0.0`` instead of forming the
+    product**. The two differ only when ``div`` is infinite, which a legal input
+    can produce: ``vectors`` of finite ``float32`` coordinates far enough apart
+    overflow the squared distance, and ``0.0 * inf`` is ``nan``. So at
+    ``lam=0.0`` with ``div=inf`` the core reports ``f_value == g_value`` while
+    ``g_value + lam * div`` evaluates to ``nan``. ``docs/CONFORMANCE.md``
+    rule 18 states the same thing for ports.
 
     Returns:
         A :class:`GistResult` dict.

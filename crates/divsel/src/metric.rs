@@ -445,6 +445,26 @@ mod tests {
     /// is `pulp::x86::V3`'s own (pulp 0.22.3, `src/x86/v3.rs`), so this answers
     /// the same question `Arch::new` asks. On `aarch64` NEON is part of the
     /// architecture, which is why that arm is a `cfg!` and not a detection.
+    ///
+    /// # The one build where this answer is wrong
+    ///
+    /// It asks the **CPU**; `Arch::new` also asks how pulp was *compiled*. `V3`
+    /// sits behind pulp's `x86-v3` feature -- on by default, and on here, since
+    /// divsel depends on `pulp = "0.22"` with defaults and cargo's feature
+    /// unification only ever adds features -- and with that feature off
+    /// `Arch::new` returns `Scalar` on an AVX2 host. This function still answers
+    /// `true` there, so [`parity_guard_fires`] fires and
+    /// [`the_dispatched_kernels_are_bit_identical_to_the_scalar_ones`] fails on
+    /// a crate that is entirely correct. Nothing divsel can call tells that
+    /// build apart from a genuine pulp fallback: a dependency's feature is not
+    /// visible as a `cfg` here, and `pulp::x86::V3` does not exist to be probed
+    /// when the feature is off. So the route is named -- here and in the guard's
+    /// failure message -- rather than handled; reaching it takes a deliberate
+    /// `default-features = false` on pulp, and the register layouts stay covered
+    /// either way by
+    /// [`every_register_layout_is_bit_identical_to_the_scalar_bodies`], which
+    /// enters all four through pulp's portable `Scalar*` types and needs no ISA
+    /// at all.
     fn simd_isa_is_available() -> bool {
         #[cfg(target_arch = "x86_64")]
         {
@@ -495,6 +515,17 @@ mod tests {
         );
         assert!(!parity_guard_fires(true, 8));
         assert!(!parity_guard_fires(false, 8));
+        // The hand-copied feature list must not drift *above* `pulp::x86::V3`'s
+        // own: one extra feature here makes this answer `false` on a host pulp
+        // does dispatch V3 on, silencing the guard exactly where it is needed.
+        // pulp cannot select an ISA the CPU lacks, so this direction holds on
+        // every host and in every pulp feature configuration.
+        assert!(
+            simd_isa_is_available() || matches!(arch(), pulp::Arch::Scalar),
+            "pulp selected {:?} on a host `simd_isa_is_available` calls ISA-less: its \
+             feature list is no longer `pulp::x86::V3`'s",
+            arch()
+        );
         // And the guard agrees with the machine this run is on: whatever pulp
         // selected here, the decision above must not condemn it.
         assert!(!parity_guard_fires(
@@ -574,7 +605,8 @@ mod tests {
             !parity_guard_fires(isa, lanes),
             "pulp selected {:?}, a {lanes}-lane arch, on a host whose CPU reports the ISA: \
              the comparisons below would then be the scalar body against itself and prove \
-             nothing",
+             nothing. (Built pulp without its default `x86-v3` feature? Then this is \
+             that build, not a fallback -- see `simd_isa_is_available`.)",
             arch()
         );
         if !isa {

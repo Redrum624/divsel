@@ -415,7 +415,9 @@ fn gist_select(
 
 /// `gist_select` with the full GIST result: a dict with keys `selected` (the
 /// same list `gist_select` returns), `f_value` (`g(S) + lam * div(S)`, the value
-/// maximized), `g_value`, `div` (the minimum pairwise distance in `S`, or
+/// maximized -- with `lam == 0` contributing exactly `0.0` rather than
+/// `0.0 * div`, so `f_value == g_value` even where `div` is infinite),
+/// `g_value`, `div` (the minimum pairwise distance in `S`, or
 /// `d_max` when `|S| <= 1`), `threshold` (the distance threshold that produced
 /// `selected`: `0.0` for `"greedy"`, `d_max` for `"diameter_pair"`, the winning
 /// `d` for `"sweep"`), `stage` (which branch of Algorithm 1 won: `"greedy"`,

@@ -210,11 +210,19 @@ impl<'a> Points<'a> {
     ///
     /// # Panics
     ///
-    /// Panics if `i >= self.n()`.
+    /// Panics if `i >= self.n()`, in **every** build profile. The slice bounds
+    /// below would catch most of those on their own, but only after computing
+    /// `i * dim`: that multiplication wraps for an absurd `i` -- with `dim == 2`,
+    /// `i = 2^63 + 1` gives the range `2..4` -- and the wrapped range is an
+    /// in-bounds slice of the *wrong* row. A `debug_assert!` here would leave
+    /// that silent in release while this section promised a panic, so the check
+    /// is a real one. Measured cost of making it unconditional: the exact
+    /// [`Points::diameter`] scan at `n = 6000`, `dim = 32` went from 49.3 ms to
+    /// 51.6 ms (best of five, release, this crate's own inner loop) -- 4.7% on
+    /// the one path that calls it `n^2/2` times, against a public accessor that
+    /// otherwise hands back a wrong row without a word.
     pub fn row(&self, i: usize) -> &[f32] {
-        // The slice bounds catch this too, but only after `i * dim` -- which
-        // wraps in release for an absurd `i` and would hand back a wrong row.
-        debug_assert!(i < self.n, "row {i} is out of range for {} points", self.n);
+        assert!(i < self.n, "row {i} is out of range for {} points", self.n);
         &self.data[i * self.dim..(i + 1) * self.dim]
     }
 
@@ -224,9 +232,10 @@ impl<'a> Points<'a> {
     ///
     /// # Panics
     ///
-    /// Panics if `i >= self.n()` or `j >= self.n()`. (`dist(i, i)` for an
-    /// out-of-range `i` returns `0.0` in release, since the short circuit runs
-    /// before any row is touched; a debug build asserts the bounds first.)
+    /// Panics if `i >= self.n()` or `j >= self.n()`, through [`Points::row`] in
+    /// every profile. (`dist(i, i)` for an out-of-range `i` returns `0.0` in
+    /// release, since the short circuit runs before any row is touched; a debug
+    /// build asserts the bounds first.)
     pub fn dist(&self, i: usize, j: usize) -> f32 {
         debug_assert!(
             i < self.n && j < self.n,
@@ -597,16 +606,48 @@ mod tests {
         }
     }
 
-    /// [`Points::row`]'s documented panic, which is a `debug_assert!`: the
-    /// slice bounds below it catch an in-range-ish `i`, but `i * dim` wraps in
-    /// release for an absurd one and would hand back a wrong row.
+    /// [`Points::row`]'s documented panic, in **both** profiles.
     #[test]
-    #[cfg(debug_assertions)]
     #[should_panic(expected = "row 7 is out of range for 3 points")]
     fn row_rejects_an_out_of_range_index() {
         let pts = Points::new(vec![0.0, 1.0, 2.0, 3.0, 4.0, 5.0], 2, Metric::Euclidean)
             .expect("three points");
         let _ = pts.row(7);
+    }
+
+    /// The index the slice bounds cannot catch: `i * dim` wraps, so
+    /// `&data[i*dim..(i+1)*dim]` is an in-bounds slice of the **wrong** row.
+    /// With `dim == 2`, `i = 2^63 + 1` gives `i * 2 == 2` and `(i + 1) * 2 == 4`
+    /// -- row 1, silently, in a release build where a `debug_assert!` is gone.
+    /// `Points::row` promises a panic without qualification, so it has to be a
+    /// real check rather than a debug-only one.
+    #[test]
+    #[should_panic(expected = "is out of range for 3 points")]
+    fn row_rejects_an_index_whose_offset_wraps() {
+        let pts = Points::new(
+            vec![10.0, 11.0, 20.0, 21.0, 30.0, 31.0],
+            2,
+            Metric::Euclidean,
+        )
+        .expect("three points");
+        let wrapping = (usize::MAX / 2) + 2; // 2^63 + 1 on a 64-bit target
+        assert_eq!(wrapping.wrapping_mul(2), 2, "the multiplication must wrap");
+        let _ = pts.row(wrapping);
+    }
+
+    /// The same wrap through the public [`Points::dist`], whose own `# Panics`
+    /// section promises the check for `i` and `j` alike (its release caveat is
+    /// about the `i == j` short circuit only).
+    #[test]
+    #[should_panic(expected = "is out of range for 3 points")]
+    fn dist_rejects_an_index_whose_offset_wraps() {
+        let pts = Points::new(
+            vec![10.0, 11.0, 20.0, 21.0, 30.0, 31.0],
+            2,
+            Metric::Euclidean,
+        )
+        .expect("three points");
+        let _ = pts.dist(0, (usize::MAX / 2) + 2);
     }
 
     /// [`Points::dist`]'s documented panic, on the `i == j` short circuit that

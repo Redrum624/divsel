@@ -50,10 +50,21 @@ use crate::utility::Utility;
 /// # Utility contract
 ///
 /// `util` is expected to be in its reset state, but a dirty one is tolerated:
-/// this function calls [`Utility::reset`] before it starts. On return, `util`
-/// holds the state for the returned selection, so the caller can read `g(S)` out
-/// of it (GIST needs exactly that) and is responsible for resetting it before
-/// the next threshold.
+/// both paths call [`Utility::reset`] before they start (`run_scan` and
+/// `run_celf` open with it), so the caller does **not** have to reset between
+/// thresholds and this function is a pure function of `(pts, d, k)` and the
+/// utility's identity. The GIST driver relies on exactly that: the parallel
+/// sweep hands each rayon job one clone and reuses it across every threshold
+/// that job covers.
+///
+/// On return `util` holds the state for the returned selection. Nothing in this
+/// crate reads `g(S)` out of it — [`crate::eval_g`] replays the selection from a
+/// reset utility instead, and says why: the leftover state describes the greedy
+/// loop's own selection, which is no help for the diametrical pair that [`gist`]
+/// also has to evaluate. A port that reads `g(S)` off the utility here therefore
+/// reproduces the greedy stage and gets the line-5 pair wrong.
+///
+/// [`gist`]: crate::gist()
 ///
 /// [`Utility::validate`] is *not* called here; the GIST driver validates once,
 /// up front. Passing a utility built for a different number of points will
@@ -754,5 +765,39 @@ mod tests {
         // Without the reset point 0's marginal is 0 and the run reports [1, 2].
         assert_eq!(dirty.marginal(0, &[], &pts), 0.0);
         assert_eq!(greedy_independent_set(&pts, &mut dirty, 0.0, 2), expected);
+    }
+
+    /// The other half of the `# Utility contract`: on return `util` holds the
+    /// **returned** selection's state, which is exactly why nothing reads `g(S)`
+    /// off it.
+    ///
+    /// The old wording said the caller could ("GIST needs exactly that"). It
+    /// does not: [`crate::eval_g`] replays from a reset utility, because the
+    /// driver's next question is the `g` of the *diametrical pair*, and asking
+    /// the leftover state for it under-counts every id the greedy loop already
+    /// committed. Here that is `1` against the true `4`.
+    #[test]
+    fn the_leftover_state_belongs_to_the_greedy_selection_and_to_nothing_else() {
+        use crate::gist::eval_g;
+
+        let pts = Points::new(vec![0.0, 1.0, 5.0], 1, Metric::Euclidean).expect("line fixture");
+        let sets = vec![vec![0, 1, 2], vec![3, 4], vec![5]];
+        let mut util = Coverage::new(sets, 6).expect("coverage sets");
+        assert_eq!(greedy_independent_set(&pts, &mut util, 0.0, 2), vec![0, 1]);
+
+        // Leftover state == the returned selection's.
+        assert_eq!(util.marginal(0, &[], &pts), 0.0);
+        assert_eq!(util.marginal(1, &[], &pts), 0.0);
+        assert_eq!(util.marginal(2, &[], &pts), 1.0);
+
+        // `g([0, 2])` read off that leftover state, the way a port following the
+        // old wording would: 0 for point 0, then 1 for point 2.
+        let mut off_the_leftovers = util.marginal(0, &[], &pts);
+        util.commit(0, &pts);
+        off_the_leftovers += util.marginal(2, &[0], &pts);
+        assert_eq!(off_the_leftovers, 1.0);
+
+        // The real `g([0, 2])`, which is what `eval_g` computes.
+        assert_eq!(eval_g(&mut util, &[0, 2], &pts), 4.0);
     }
 }

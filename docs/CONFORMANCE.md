@@ -160,8 +160,12 @@ citation matters more than an impressive one.
    then `b = argmax_{j != a} dist(a, j)` — the source index is **excluded**,
    so the pair stays distinct even when every distance is 0; argmax ties →
    lowest index — keeps `(dist(a, b), min(a, b), max(a, b))` under the same
-   total order, and continues from `b`. `sweeps == 0` is treated as 1;
-   `d_hat ∈ [d_max/2, d_max]`. (Case 20 pins `d_hat`: the sweep from index 0
+   total order, and continues from `b`. `sweeps == 0` is treated as 1, and
+   `sweeps > n` as `n` — the orbit `current_{t+1} = b(current_t)` lives in a
+   set of size `n`, so it repeats within `n` steps and no later sweep can
+   change the answer; the clamp is result-preserving and a port may omit it
+   (it exists so that an unvalidated `sweeps` cannot become a call that never
+   returns). `d_hat ∈ [d_max/2, d_max]`. (Case 20 pins `d_hat`: the sweep from index 0
    returns `(0, 1)` at `8.00390…`, not the exact `8.20061…` at `(2, 3)`, and
    `expected_d_max` plus the winning threshold — an entry of the grid built
    from `d_hat` — follow from it. It does **not** pin `sweeps > 1` (the first
@@ -238,6 +242,25 @@ citation matters more than an impressive one.
     fixture, which carries no universe field — the universe is inferred as
     `max id + 1` (0 when every list is empty); the universe only bounds the
     ids, it never changes `g`. (Cases 17, 18, 21.)
+
+18. **`lambda == 0` contributes exactly `0` to `f`, whatever `div` is.**
+    divsel evaluates `f(S) = g(S) + lambda * div(S)` as `g(S)` alone when
+    `lambda == 0`, instead of forming the product — a **`[divsel choice]`**,
+    because `div(S)` really can be `+inf` and `0 * inf` is `NaN` in IEEE-754.
+    `Points::new` validates coordinates, not distances, so a point set of
+    finite `f32` coordinates far enough apart overflows the squared difference:
+    `vectors = [[-3e38], [3e38]]`, `metric = "euclidean"`, `k = 2`,
+    `lam = 0`, `eps = 0.1` gives `div = +inf`, and divsel reports
+    `f = g = 2.0`, `stage = "sweep"`, `threshold = +inf`, `d_max = +inf`. A port
+    that writes the formula literally gets `f = NaN` there, and `NaN` then loses
+    rule 3's line-5 `>` and every `>=` in rule 2's fold, so it also reports
+    `stage = "greedy"` and `threshold = 0` — three fields diverging with no
+    error on either side. The same identity is what the Python stub promises for
+    `gist_select_full`, so it is qualified there too. (**Not pinned by any
+    fixture, and unpinnable by one:** every fixture input is a dyadic rational
+    in `[-4, 4]` by construction, so no case can reach an infinite `div`. Rust
+    covers it at `gist::tests::lambda_zero_survives_an_infinite_div` and Python
+    at `test_api.py::test_lambda_zero_with_an_infinite_div_is_g_not_nan`.)
 
 ### Optional: bit-identity (not required for conformance)
 

@@ -62,7 +62,11 @@ pub enum DiameterMode {
     /// A farthest-point double sweep, `O(sweeps * n * dim)`, yielding a `d_hat`
     /// in `[d_max/2, d_max]`. A **`[divsel choice]`**; see [`approx_diameter`].
     Approx {
-        /// Number of double sweeps to run. `0` is treated as `1`.
+        /// Number of double sweeps to run. `0` is treated as `1`, and anything
+        /// above `pts.n()` is treated as `pts.n()` -- the sweep's orbit repeats
+        /// within `n` steps, so the clamp preserves the result exactly while
+        /// keeping this unvalidated knob from becoming a call that never
+        /// returns. See [`approx_diameter`].
         sweeps: usize,
     },
 }
@@ -147,7 +151,12 @@ pub struct GistResult {
     /// (selection order for [`Stage::Greedy`] and [`Stage::Sweep`], ascending for
     /// [`Stage::DiameterPair`]). At most `k` of them.
     pub selected: Vec<usize>,
-    /// `f(S) = g(S) + lambda * div(S)`, the value that was maximized.
+    /// `f(S) = g(S) + lambda * div(S)`, the value that was maximized -- with
+    /// `lambda == 0` contributing exactly `0.0`, not `0.0 * div`. That
+    /// distinction is visible whenever `div` is `+inf` (finite coordinates far
+    /// enough apart overflow the squared distance): `f_value` is then `g_value`,
+    /// where the literal product would be `NaN`. See `docs/CONFORMANCE.md`
+    /// rule 18.
     pub f_value: f64,
     /// `g(S)` alone, so a caller can see how the objective splits.
     pub g_value: f64,
@@ -352,6 +361,24 @@ pub fn eval_g(util: &mut dyn Utility, s: &[usize], pts: &Points<'_>) -> f64 {
 /// `sweeps == 0` is treated as `1`. A set of fewer than two points yields
 /// `(0.0, 0, 0)`, matching [`Points::diameter`].
 ///
+/// # Sweeps above `n` are treated as `n`
+///
+/// The clamp is **result-preserving**, not a cap that trades accuracy for time:
+/// sweep `t + 1` is a pure function of sweep `t`'s endpoint, `current_{t+1} =
+/// b(current_t)`, so the sequence of starting points is a deterministic orbit in
+/// a set of size `n` and must repeat within the first `n` steps. Once it repeats
+/// it is periodic, and every pair the sweep will ever produce has already been
+/// folded into `best`. `approx_diameter(pts, m)` for any `m > n` therefore
+/// returns exactly what `approx_diameter(pts, n)` returns.
+///
+/// It is also the only thing between [`GistConfig::diameter`] and a call that
+/// never returns: [`gist`] validates `k`, `eps` and `lambda` but forwards
+/// `sweeps` untouched, and the loop below is strictly linear in it -- measured on
+/// a five-point set, `1` sweep is 8.7 us, `20_000_000` is 3.46 s. Without the
+/// clamp `DiameterMode::Approx { sweeps: 1 << 62 }` on those same five points is
+/// about `10^12` seconds, and the Python binding accepts any `diameter_sweeps`
+/// that fits an `i64`.
+///
 /// Not part of the supported API: it is `pub` only so this crate's benches can
 /// reach it.
 #[doc(hidden)]
@@ -361,7 +388,7 @@ pub fn approx_diameter(pts: &Points<'_>, sweeps: usize) -> (f32, usize, usize) {
     }
     let mut best = (f32::NEG_INFINITY, usize::MAX, usize::MAX);
     let mut current = 0usize;
-    for _ in 0..sweeps.max(1) {
+    for _ in 0..sweeps.clamp(1, pts.n()) {
         let a = farthest_from(pts, current);
         let b = farthest_from(pts, a);
         best = better_pair(best, (pts.dist(a, b), a.min(b), a.max(b)));
@@ -2037,6 +2064,200 @@ mod tests {
                 "sweeps = {sweeps}"
             );
         }
+    }
+
+    /// [`DiameterMode::Approx`] combined with a [`FacilityLocation`] utility:
+    /// the similarity **scale** stays the exact diameter while the driver sweeps
+    /// on `d_hat` (`docs/CONFORMANCE.md` rule 10's exception).
+    ///
+    /// Nothing else in the repository puts `Approx` together with anything but
+    /// `Linear` + [`Metric::Euclidean`]: the oracle hardcodes `Exact`, every
+    /// other approx unit test is linear/euclidean, the one approx fixture
+    /// (`approx_diameter_double_sweep`) is linear/euclidean, and every Python
+    /// `diameter="approx"` call passes `metric="euclidean"` with the default
+    /// utility. So `usable_scale(pts.diameter().0)` in `FacilityLocation::new`
+    /// could be swapped for the estimate without a single test noticing. The
+    /// third assertion below is what notices: on this fixture the two scales
+    /// give different `g` values.
+    #[test]
+    fn the_facility_location_scale_stays_exact_under_an_approximate_diameter() {
+        // Chosen so the double sweep from index 0 misses the diameter pair.
+        let pts = Points::new(
+            vec![8.0, 2.0, 3.0, 7.0, 1.0, 5.0, 6.0, -5.0],
+            2,
+            Metric::Euclidean,
+        )
+        .expect("four points");
+        let (d_max, _, _) = pts.diameter();
+        let (d_hat, _, _) = approx_diameter(&pts, 1);
+        assert!(
+            d_hat < d_max,
+            "the fixture must make the sweep miss: d_hat {d_hat} vs d_max {d_max}"
+        );
+
+        let mut util = FacilityLocation::new(&pts);
+        let cfg = GistConfig {
+            k: 2,
+            diameter: DiameterMode::Approx { sweeps: 1 },
+            ..Default::default()
+        };
+        let out = gist(&pts, &mut util, &cfg).expect("valid configuration");
+        assert_eq!(out.d_max, d_hat, "the reported diameter is the estimate");
+
+        // Rule 10's exception, pinned: `g` is the one computed against the exact
+        // diameter, not against the estimate the sweep ran on.
+        let mut exact_scale = FacilityLocation::with_scale(pts.n(), d_max);
+        assert_eq!(eval_g(&mut exact_scale, &out.selected, &pts), out.g_value);
+        let mut hat_scale = FacilityLocation::with_scale(pts.n(), d_hat);
+        assert_ne!(
+            eval_g(&mut hat_scale, &out.selected, &pts),
+            out.g_value,
+            "the two scales must disagree here, or this test pins nothing"
+        );
+    }
+
+    /// The rest of the untested `Approx` surface: [`Metric::Cosine`], and a
+    /// [`Coverage`] utility.
+    ///
+    /// Cosine's facility-location scale is the constant `1.0` (rule 8), so the
+    /// diameter mode cannot reach it at all -- asserted here rather than assumed
+    /// -- and `Coverage` never looks at a distance, so its `g` must be identical
+    /// under both modes even though the thresholds the sweep runs at differ.
+    #[test]
+    fn approximate_diameters_work_under_cosine_and_coverage_too() {
+        use crate::utility::Coverage;
+
+        let raw = vec![
+            1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, -1.0, 0.0, 0.0, 0.5, 0.5, 0.5,
+        ];
+        let pts = Points::new(raw, 3, Metric::Cosine).expect("five cosine rows");
+        let (d_hat, _, _) = approx_diameter(&pts, 2);
+        assert!(d_hat > 0.0 && d_hat <= pts.diameter().0);
+
+        let mut util = FacilityLocation::new(&pts);
+        let cfg = GistConfig {
+            k: 3,
+            diameter: DiameterMode::Approx { sweeps: 2 },
+            ..Default::default()
+        };
+        let out = gist(&pts, &mut util, &cfg).expect("valid configuration");
+        assert_eq!(out.d_max, d_hat);
+        // The cosine scale is 1.0 whatever the diameter mode says.
+        let mut unit_scale = FacilityLocation::with_scale(pts.n(), 1.0);
+        assert_eq!(eval_g(&mut unit_scale, &out.selected, &pts), out.g_value);
+
+        // Coverage under both modes: `g` of each run's own selection is the
+        // replay, and the utility never sees a distance.
+        let sets = vec![vec![0, 1], vec![1, 2], vec![3], vec![4, 5], vec![0, 5]];
+        let fresh = || Coverage::new(sets.clone(), 6).expect("coverage sets");
+        for diameter in [DiameterMode::Exact, DiameterMode::Approx { sweeps: 2 }] {
+            let mut util = fresh();
+            let cfg = GistConfig {
+                k: 3,
+                diameter,
+                ..Default::default()
+            };
+            let out = gist(&pts, &mut util, &cfg).expect("valid configuration");
+            let mut replay = fresh();
+            assert_eq!(
+                eval_g(&mut replay, &out.selected, &pts),
+                out.g_value,
+                "coverage g under {diameter:?}"
+            );
+        }
+    }
+
+    /// `lambda == 0` contributes exactly `0.0` to `f`, never `0.0 * div`.
+    ///
+    /// `div` really can be `+inf`: [`Points::new`] validates coordinates, not
+    /// distances, so two finite `f32` coordinates far enough apart overflow the
+    /// squared difference. `0.0 * inf` is `NaN`, and a `NaN` `f` loses the
+    /// strict `>` on line 5 **and** every `>=` in the sweep fold, so the driver
+    /// would report the line-2 stage and threshold whatever the sweep found.
+    /// `docs/CONFORMANCE.md` rule 18 states this for ports; no fixture can pin
+    /// it (every fixture input is a dyadic rational in `[-4, 4]`), so this is
+    /// where it is pinned.
+    #[test]
+    fn lambda_zero_survives_an_infinite_div() {
+        let pts = Points::new(vec![-3.0e38, 3.0e38], 1, Metric::Euclidean).expect("two points");
+        assert!(pts.dist(0, 1).is_infinite(), "the fixture must overflow");
+
+        let mut util = Linear::uniform(pts.n());
+        let cfg = GistConfig {
+            k: 2,
+            lambda: 0.0,
+            ..Default::default()
+        };
+        let out = gist(&pts, &mut util, &cfg).expect("valid configuration");
+        assert_eq!(out.selected, vec![0, 1]);
+        assert_eq!(out.f_value, 2.0, "0 * inf must not reach f");
+        assert_eq!(out.g_value, 2.0);
+        assert!(out.div.is_infinite());
+        assert!(out.d_max.is_infinite());
+        assert!(out.threshold.is_infinite());
+        assert_eq!(out.stage, Stage::Sweep);
+
+        // The literal formula, for the record: this is what a port that writes
+        // `g + lam * div` gets instead, and what CONFORMANCE rule 18 warns about.
+        assert!((out.g_value + cfg.lambda * f64::from(out.div)).is_nan());
+
+        // A non-zero lambda still forms the product, so `f` is legitimately inf.
+        let mut util = Linear::uniform(pts.n());
+        let out = gist(
+            &pts,
+            &mut util,
+            &GistConfig {
+                k: 2,
+                lambda: 1.0,
+                ..Default::default()
+            },
+        )
+        .expect("valid configuration");
+        assert!(out.f_value.is_infinite());
+    }
+
+    /// `sweeps` is the one [`GistConfig`] knob with no validation, so it is the
+    /// one that has to be incapable of running away: the loop is strictly linear
+    /// in it (measured on this five-point set: 1 sweep 8.7 us, 20_000_000 sweeps
+    /// 3.46 s), and `1 << 62` sweeps would be about `10^12` seconds. The clamp to
+    /// `n` is result-preserving -- the orbit `current_{t+1} = b(current_t)` lives
+    /// in a set of size `n`, so it repeats within `n` steps and every later sweep
+    /// re-folds a pair `best` already holds.
+    #[test]
+    fn a_sweep_count_above_n_costs_nothing_and_changes_nothing() {
+        let pts = line_five();
+        let baseline = approx_diameter(&pts, pts.n());
+        assert_eq!(baseline, (12.0, 0, 4));
+        // Before the clamp this call did not return in any human timeframe.
+        assert_eq!(approx_diameter(&pts, usize::MAX), baseline);
+        assert_eq!(approx_diameter(&pts, 1 << 62), baseline);
+
+        // The orbit argument, empirically, on point sets whose sweeps disagree:
+        // nothing past `n` ever moves the answer.
+        let mut rng = SplitMix64(0x51ed_0bee);
+        for case in 0..12 {
+            let n = 3 + case;
+            let pts = Points::new(rng.gaussian_points(n, 3), 3, Metric::Euclidean)
+                .expect("gaussian points");
+            let at_n = approx_diameter(&pts, n);
+            for extra in [n + 1, 2 * n, 4 * n, 97 * n, usize::MAX] {
+                assert_eq!(
+                    approx_diameter(&pts, extra),
+                    at_n,
+                    "n = {n}, sweeps = {extra}"
+                );
+            }
+        }
+
+        // And through the driver, which forwards `cfg.diameter` untouched.
+        let (pts, mut util) = twelve_points();
+        let cfg = GistConfig {
+            k: 3,
+            diameter: DiameterMode::Approx { sweeps: usize::MAX },
+            ..Default::default()
+        };
+        let out = gist(&pts, &mut util, &cfg).expect("valid configuration");
+        assert_eq!(out.d_max, approx_diameter(&pts, pts.n()).0);
     }
 
     /// [`eval_g`] and [`gist`] both hand the utility back in the empty-selection
