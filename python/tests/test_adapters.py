@@ -964,7 +964,15 @@ def test_min_eps_is_the_cores_own_floor_and_is_accepted():
     with pytest.raises(ValueError):
         gist_select(x, None, k=2, eps=MIN_EPS * 0.5, metric="cosine")
 
-    if importlib.util.find_spec("langchain_core") is not None:
+    def installed(module: str) -> bool:
+        # `find_spec("llama_index.core")` raises when the parent package is
+        # missing, which is exactly the venv this has to be silent in.
+        try:
+            return importlib.util.find_spec(module) is not None
+        except ModuleNotFoundError:
+            return False
+
+    if installed("langchain_core"):
         from divsel.adapters.langchain import DivselRetriever
 
         ns = _lc_edge()
@@ -972,7 +980,7 @@ def test_min_eps_is_the_cores_own_floor_and_is_accepted():
             vectorstore=ns.Store(ns.Partial()), k=4, eps=MIN_EPS
         ).invoke(QUERY_TEXT)
         assert len(docs) <= 4
-    if importlib.util.find_spec("llama_index.core") is not None:
+    if installed("llama_index.core"):
         from divsel.adapters.llamaindex import DivselNodePostprocessor
 
         ns = _li()

@@ -155,12 +155,30 @@ def test_margin_check_accepts_the_generated_case_and_rejects_a_wrong_selection()
     assert ok, reason
     assert gap >= 1e-4
 
-    # A selection that is not the argmax must not clear the margin rule.
+    # A selection that is not the argmax must not clear the margin rules --
+    # reported WITH its own brute-force f value, so the reimplementation-drift
+    # guard (which rejects any selection whose f does not match the library's
+    # reported one) cannot be what rejects it. Handing the argmax's f_value
+    # along with a different selection only ever exercised that guard, which is
+    # not what rules (a)/(b)/(c) do.
+    values, _ = gen._brute_f(case)
+    wrong_selected = [0, 1]
+    assert wrong_selected != out["selected"], "the fixture must disagree here"
     wrong = dict(out)
-    wrong["selected"] = [i for i in range(len(case["vectors"]))][: case["k"]]
-    if wrong["selected"] != out["selected"]:
-        ok, reason, _ = gen.margin_check(case, wrong)
-        assert not ok and reason
+    wrong["selected"] = wrong_selected
+    wrong["f_value"] = values[frozenset(wrong_selected)]
+
+    ok, reason, _ = gen.margin_check(case, wrong)
+    assert not ok
+    assert "drifts" not in reason, f"the drift guard fired, not a margin rule: {reason}"
+    # Rule (b): [0, 1] and [2, 3] both score 2.5 on this case.
+    assert "f value shared with" in reason, reason
+
+    # The drift guard is still there, and still rejects an inconsistent pair.
+    inconsistent = dict(out)
+    inconsistent["selected"] = wrong_selected
+    ok, reason, _ = gen.margin_check(case, inconsistent)
+    assert not ok and "drifts" in reason
 
 
 def test_dy_rejects_values_the_fixture_rules_forbid():

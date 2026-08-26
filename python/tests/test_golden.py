@@ -17,6 +17,7 @@ The generator is ``python/tools/gen_golden.py``; the Rust-side reader is
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 
 import numpy as np
@@ -26,9 +27,43 @@ from divsel import gist_select_full
 
 _ROOT = Path(__file__).resolve().parents[2]
 GOLDEN_PATH = _ROOT / "test-assets" / "golden-selection.json"
-# The fixture's generator is the marker for "the checkout that owns the fixture".
-# Where it is present, a missing fixture is a hard error, never a skip.
-_GENERATOR = _ROOT / "python" / "tools" / "gen_golden.py"
+
+
+def _require_golden(value: str | None) -> bool:
+    """``DIVSEL_REQUIRE_GOLDEN`` set to anything but empty or ``0``.
+
+    The same override the Rust reader honours (``crates/divsel/tests/golden.rs``)
+    and the same one CI sets: a gate that can decide it has nothing to gate is
+    not a gate.
+    """
+    return value is not None and value != "" and value != "0"
+
+
+def _owns_the_fixture(root: Path) -> bool:
+    """Does `root` look like the repository the fixture lives in?
+
+    Several markers, none of which may be the only coupling. Keying the whole
+    decision on ``python/tools/gen_golden.py`` -- an unrelated file a refactor
+    is free to move -- meant that moving it while the fixture was also
+    unreachable turned the 22-case contract into ``2 skipped``, exit 0, with
+    nothing checked. This mirrors ``missing_fixture_policy`` in
+    ``crates/divsel/tests/golden.rs``; the two readers must agree.
+    """
+    if (root / ".git").exists():
+        return True
+    if (root / "test-assets").is_dir():
+        return True
+    if (root / "python" / "tools" / "gen_golden.py").exists():
+        return True
+    try:
+        return "[workspace]" in (root / "Cargo.toml").read_text(encoding="utf-8")
+    except OSError:
+        return False
+
+
+def _missing_fixture_is_fatal(required: bool, root: Path) -> bool:
+    """A missing fixture is a failure in any tree that owns it, or on demand."""
+    return required or _owns_the_fixture(root)
 
 
 def _load_golden() -> dict | None:
@@ -44,7 +79,9 @@ def _load_golden() -> dict | None:
         with open(GOLDEN_PATH, encoding="utf-8") as fh:
             return json.load(fh)
     except FileNotFoundError:
-        if _GENERATOR.exists():
+        if _missing_fixture_is_fatal(
+            _require_golden(os.environ.get("DIVSEL_REQUIRE_GOLDEN")), _ROOT
+        ):
             raise
         return None
 
@@ -53,7 +90,10 @@ GOLDEN = _load_golden()
 CASES = GOLDEN["cases"] if GOLDEN is not None else []
 F_REL = GOLDEN["tolerance"]["f_rel"] if GOLDEN is not None else 0.0
 
-pytestmark = pytest.mark.skipif(
+# Applied per test rather than as a module-level `pytestmark`, so that the two
+# policy tests below -- which decide when that skip is even allowed -- run
+# everywhere, including in a tree with no fixture in it.
+needs_the_fixture = pytest.mark.skipif(
     GOLDEN is None,
     reason=f"{GOLDEN_PATH} is not present: the golden fixture ships with the "
     "repository (and the sdist), not with the wheel",
@@ -65,6 +105,59 @@ def _close(actual: float, expected: float) -> bool:
     return abs(actual - expected) <= F_REL * max(1.0, abs(expected))
 
 
+def test_the_require_golden_override_is_read_the_way_ci_sets_it() -> None:
+    assert not _require_golden(None)
+    assert not _require_golden("")
+    assert not _require_golden("0")
+    assert _require_golden("1")
+    assert _require_golden("true")
+
+
+def test_a_missing_fixture_only_skips_outside_the_repository_that_owns_it(tmp_path) -> None:
+    """The Python half of the policy the Rust reader already pins.
+
+    The regression: keying the decision on ``python/tools/gen_golden.py`` alone
+    meant that moving the generator -- a refactor nothing forbids -- while the
+    fixture was also unreachable made ``pytest python/tests/test_golden.py``
+    report ``2 skipped``, exit 0, with zero of the 22 conformance cases checked,
+    and it stayed 0 even with ``DIVSEL_REQUIRE_GOLDEN=1`` because only the Rust
+    reader read that variable.
+    """
+    empty = tmp_path / "empty"
+    empty.mkdir()
+    # Nothing at all: an installed copy of this suite, a wheel, a sdist-less tree.
+    assert not _missing_fixture_is_fatal(False, empty)
+    # ... unless CI asked for the gate explicitly.
+    assert _missing_fixture_is_fatal(True, empty)
+
+    for marker in ("test-assets", ".git", "python/tools/gen_golden.py", "Cargo.toml"):
+        root = tmp_path / marker.replace("/", "_").replace(".", "_")
+        root.mkdir()
+        assert not _missing_fixture_is_fatal(False, root), marker
+        if marker in ("test-assets", ".git"):
+            (root / marker).mkdir()
+        elif marker == "Cargo.toml":
+            (root / marker).write_text("[workspace]\nmembers = []\n", encoding="utf-8")
+        else:
+            (root / "python" / "tools").mkdir(parents=True)
+            (root / marker).write_text("# generator\n", encoding="utf-8")
+        assert _missing_fixture_is_fatal(False, root), marker
+
+    # A package-root manifest is not a workspace manifest.
+    package = tmp_path / "package"
+    package.mkdir()
+    (package / "Cargo.toml").write_text('[package]\nname = "divsel"\n', encoding="utf-8")
+    assert not _missing_fixture_is_fatal(False, package)
+
+    # And where the fixture IS reachable, the tree it sits in must be one the
+    # policy calls an owner -- a missing file there is a broken checkout, never
+    # a skip. (An installed copy of this suite has neither, and legitimately
+    # skips; that is the one situation the skip exists for.)
+    if GOLDEN_PATH.exists():
+        assert _missing_fixture_is_fatal(False, _ROOT)
+
+
+@needs_the_fixture
 def test_golden_header() -> None:
     assert GOLDEN is not None
     assert GOLDEN["schema"] == 1
@@ -74,6 +167,7 @@ def test_golden_header() -> None:
     assert len(GOLDEN["cases"]) == 22
 
 
+@needs_the_fixture
 @pytest.mark.parametrize("case", CASES, ids=[c["name"] for c in CASES])
 def test_golden_case(case: dict) -> None:
     vectors = np.ascontiguousarray(np.array(case["vectors"], dtype=np.float32))

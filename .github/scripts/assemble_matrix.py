@@ -32,6 +32,27 @@ def main() -> int:
         print("uploading, or the artifact download matched nothing. There is no")
         print("table to print and no matrix to write.")
         return 1
+    # A record missing one of the keys the table is keyed on used to surface as
+    # a bare `KeyError` from inside a comprehension, naming neither the key nor
+    # the file. install_cell.sh writes these, and nothing but this script reads
+    # them, so a renamed key there is exactly the failure that has to be
+    # readable here.
+    required = ("library", "os", "python", "status")
+    malformed = [
+        (path, key)
+        for path, record in zip(sorted(cells_dir.rglob("*.json")), records)
+        for key in required
+        if key not in record
+    ]
+    if malformed:
+        print("## Installability matrix")
+        print("")
+        for path, key in malformed:
+            print(f"**Malformed cell record**: `{path}` has no `{key}`.")
+        print("")
+        print("install_cell.sh writes these records and this script is their only")
+        print("reader; a key renamed on one side is a broken run, not a blank cell.")
+        return 1
     pythons = sorted({r["python"] for r in records}, key=lambda v: tuple(int(x) for x in v.split(".")))
     oses = [o for o in OS_ORDER if any(r["os"] == o for r in records)]
     oses += sorted({r["os"] for r in records} - set(oses))

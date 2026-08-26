@@ -10,41 +10,6 @@ def test_import():
     assert divsel.__version__ == "0.1.0"
 
 
-def test_missing_extension_points_at_maturin_develop():
-    """The ``except ImportError`` arm of ``python/divsel/__init__.py``.
-
-    It is the first thing a source-checkout user hits, and nothing exercised it:
-    the extension is always present in a venv where the suite can run. A meta
-    path finder that refuses ``divsel._divsel`` reproduces the state without
-    touching the installation, in a child process so this one keeps its import.
-    """
-    code = (
-        "import sys\n"
-        "class Block:\n"
-        "    def find_spec(self, name, path=None, target=None):\n"
-        "        if name == 'divsel._divsel':\n"
-        "            raise ImportError('no compiled extension in this test')\n"
-        "        return None\n"
-        "sys.meta_path.insert(0, Block())\n"
-        "try:\n"
-        "    import divsel\n"
-        "except ImportError as exc:\n"
-        "    print(exc)\n"
-        "    raise SystemExit(0)\n"
-        "raise SystemExit('divsel imported without its extension module')\n"
-    )
-    proc = subprocess.run(
-        [sys.executable, "-c", code],
-        capture_output=True,
-        text=True,
-        check=False,
-        timeout=120,
-    )
-    assert proc.returncode == 0, proc.stdout + proc.stderr
-    assert "maturin develop" in proc.stdout
-    assert "_divsel" in proc.stdout
-
-
 def _import_in_child(extra_path: str | None = None) -> subprocess.CompletedProcess:
     """Import ``divsel`` with ``divsel._divsel`` refused, in a child process.
 
@@ -108,7 +73,15 @@ def test_a_present_but_unloadable_extension_is_not_reported_as_unbuilt():
 
 
 def test_a_genuinely_missing_extension_still_points_at_maturin_develop(tmp_path):
-    """The other branch: a package directory with no compiled module in it."""
+    """The other branch: a package directory with no compiled module in it.
+
+    This is the only test that reaches it. Blocking ``divsel._divsel`` inside a
+    venv where the extension IS installed takes the present-but-unloadable arm
+    above -- whose message contains both "maturin develop" and "_divsel", so a
+    test asserting only those two strings passed while the "is not built" arm
+    went unexercised. Hence the copied package directory with nothing next to
+    it, and the ``is not built`` assertion below.
+    """
     package = tmp_path / "divsel"
     package.mkdir()
     shutil.copy(

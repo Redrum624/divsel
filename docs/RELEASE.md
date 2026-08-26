@@ -20,6 +20,14 @@ and `git push -u origin main`).
 > Note: taking the repo public was your earlier decision (private until release);
 > `--public` here is that flip. If you want a last look first, use `--private` and
 > run `gh repo edit Redrum624/divsel --visibility public --accept-visibility-change-consequences` when ready.
+>
+> On that private path, watch the **`simd parity (aarch64)`** job: it is the only
+> one in `ci.yml` that asks for a runner label whose availability depends on the
+> account (`runs-on: ubuntu-24.04-arm`, GitHub's hosted Linux arm64 image), and no
+> job in this repository has ever run — see `docs/benchmarks/README.md`. If that
+> job cannot start, check the account's runner entitlement before concluding the
+> workflow is broken; it is the sole gate for the aarch64 half of the R-G22
+> bit-identity promise, so dropping it silently would take that half with it.
 
 ## 2. Publish the crate
 
@@ -86,7 +94,9 @@ fills for Linux/macOS, and paste the assembled table into `docs/benchmarks/READM
 > everything under `wheels/` in particular — is a build artifact, never proof
 > about a later commit: check `git log <sha>..HEAD` before reusing an entry, and
 > re-run the local gates the entries below list — the test suites, clippy, fmt,
-> `cargo doc`, `gen_golden.py --check`, `cargo publish -p divsel --dry-run` and
+> `cargo doc`, `gen_golden.py --check`, `cargo test -p divsel --benches`
+> (the bench target's own guard: it must print "is a benchmark, not a test"
+> rather than run a fixture), `cargo publish -p divsel --dry-run` and
 > the wheel builds/installs — at the commit you are actually tagging. (Steps 1-7
 > are the outward-facing actions; they are not the verification.) As of the last update
 > to this file the wheels in `wheels/` were built on 2026-08-22 at 14:11-14:18
