@@ -10,17 +10,28 @@
 # NOTE: regeneration rewrites the whole file and CLOBBERS this comment (verified);
 # re-add it after regenerating.
 #
-name: CI
+# LOCAL CHANGES TO RE-APPLY AFTER EVERY REGENERATION (the generator has no config
+# key for either -- api-notes records the accepted [tool.maturin.generate-ci.github]
+# keys, and trigger/name/concurrency are not among them):
+#   1. `name:` is `release`, not the generator's `CI`, which collided with ci.yml.
+#   2. `on:` is tags + manual only. The generator also fires this on every push to
+#      main/master and every pull request, which builds the full six-target wheel
+#      matrix -- two of them macOS, billed at 10x -- for a change that is not a
+#      release. That, together with the other two workflows, exhausted a 2,000
+#      minute monthly allowance in about four pushes.
+#   3. `concurrency:` cancels a superseded run of the same ref.
+#
+name: release
 
 on:
   push:
-    branches:
-      - main
-      - master
     tags:
       - '*'
-  pull_request:
   workflow_dispatch:
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: true
 
 permissions:
   contents: read

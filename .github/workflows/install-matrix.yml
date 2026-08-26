@@ -20,6 +20,10 @@ on:
   pull_request:
   workflow_dispatch:
 
+concurrency:
+  group: install-matrix-${{ github.ref }}
+  cancel-in-progress: true
+
 permissions:
   contents: read
 

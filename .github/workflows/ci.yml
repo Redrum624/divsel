@@ -9,6 +9,12 @@ on:
   pull_request:
   workflow_dispatch:
 
+# A push that supersedes another on the same ref cancels it: the matrix is 17 jobs,
+# four of them macOS at a 10x minute multiplier, so a queued stale run is expensive.
+concurrency:
+  group: checks-${{ github.ref }}
+  cancel-in-progress: true
+
 permissions:
   contents: read
 
