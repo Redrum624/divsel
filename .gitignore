@@ -22,3 +22,7 @@ __pycache__/
 /venv-*
 /install-cells/
 /docs/benchmarks/install-matrix.json
+
+# Scratch: screenshots, saved run output, anything dropped here while working.
+# Not source, and it can contain account or billing detail from a screenshot.
+/logs/
