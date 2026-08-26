@@ -20,7 +20,7 @@ from typing import List, Literal, Optional
 import numpy as np
 
 from divsel import gist_select
-from divsel.adapters import MIN_EPS, DivselFallbackWarning
+from divsel.adapters import MIN_EPS, DivselFallbackWarning, _vectors_or_reason
 
 try:
     from llama_index.core.base.embeddings.base import BaseEmbedding
@@ -52,11 +52,16 @@ class DivselNodePostprocessor(BaseNodePostprocessor):
     cosine similarity to ``query_bundle.embedding`` (shifted, ``1 + cos``)
     when that exists, else uniform.
 
-    When no vectors can be obtained (no embeddings on the nodes and no
-    ``embed_model``) it warns with
+    When no usable vectors can be obtained it warns with
     :class:`~divsel.adapters.DivselFallbackWarning` and returns the plain
     top-``k`` by existing ``score`` (or the first ``k`` nodes when scores are
-    missing) — not diversified. Set ``strict=True`` for a ``ValueError``.
+    missing) — not diversified. Set ``strict=True`` for a ``ValueError``. That
+    covers nodes with no embeddings and no ``embed_model``,
+    ``get_text_embedding_batch`` raising ``NotImplementedError``, and either
+    source — the nodes' own ``embedding`` values or the model's return —
+    yielding the wrong number of vectors or vectors of an unusable shape (not a
+    rectangular ``(n, d)`` block of numbers).
+    :class:`~divsel.adapters.DivselFallbackWarning` lists them all.
     """
 
     # Constraints live on the fields, so an unusable configuration fails at
@@ -133,7 +138,15 @@ class DivselNodePostprocessor(BaseNodePostprocessor):
 
         node_embeddings = [n.node.embedding for n in nodes]
         if all(e is not None for e in node_embeddings):
-            raw_vectors = node_embeddings
+            # The nodes' own embeddings had no guard at all: one node carrying a
+            # dimension-2 embedding while the rest carry dimension 4 went
+            # straight into `np.ascontiguousarray` and raised a raw numpy
+            # `ValueError` past both the warn path and the strict path.
+            vectors, reason = _vectors_or_reason(
+                node_embeddings, len(nodes), "the nodes' own node.embedding", "nodes"
+            )
+            if reason is not None:
+                return self._fallback(nodes, reason)
         elif self.embed_model is not None:
             # An embed model is free to implement only the single-text hook, or
             # none at all: unguarded, that `NotImplementedError` escaped past
@@ -146,22 +159,24 @@ class DivselNodePostprocessor(BaseNodePostprocessor):
                 return self._fallback(
                     nodes, "embed_model.get_text_embedding_batch is not implemented"
                 )
-            # And a model that returns the wrong number of vectors is a failure
-            # too, not a shape: an empty list made numpy raise `AxisError` from
-            # inside `_linear_weights`, a short one silently diversified over a
-            # prefix of `nodes`, and a long one let `selected` index past them.
-            if len(raw_vectors) != len(nodes):
-                return self._fallback(
-                    nodes,
-                    f"embed_model.get_text_embedding_batch returned "
-                    f"{len(raw_vectors)} vectors for {len(nodes)} nodes",
-                )
+            # And a return that is not one usable vector per node is a failure
+            # too, not a shape to be passed on: a short one silently diversified
+            # over a prefix of `nodes`, a long one let `selected` index past
+            # them, and a right-length return of the wrong rank or with ragged
+            # rows escaped as a raw numpy error or the binding's `TypeError`.
+            # `_vectors_or_reason` is shared with the LangChain twin.
+            vectors, reason = _vectors_or_reason(
+                raw_vectors,
+                len(nodes),
+                "embed_model.get_text_embedding_batch",
+                "nodes",
+            )
+            if reason is not None:
+                return self._fallback(nodes, reason)
         else:
             return self._fallback(
                 nodes, "nodes carry no embeddings and no embed_model is set"
             )
-
-        vectors = np.ascontiguousarray(raw_vectors, dtype=np.float32)
 
         if self.utility == "linear":
             utilities = self._linear_weights(nodes, vectors, query_bundle)

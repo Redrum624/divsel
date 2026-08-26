@@ -181,7 +181,9 @@ fn coverage_sets(utilities: Option<&Bound<'_, PyAny>>) -> PyResult<(Vec<Vec<u32>
     // sequence of int sequences -- which it is. Same rule as `budget`: the error
     // keys on the exception, not on the argument's type, so every int-like
     // Python accepts (a numpy scalar, anything with `__index__`) is reported the
-    // same way.
+    // same way -- and, by the same rule, an exception that is neither an
+    // `OverflowError` nor a `TypeError` came out of the caller's own code and is
+    // propagated rather than relabelled.
     let rows: Vec<Vec<Bound<'_, PyAny>>> = obj
         .extract()
         .map_err(|_| PyTypeError::new_err(COVERAGE_TYPE_ERROR))?;
@@ -203,7 +205,17 @@ fn coverage_sets(utilities: Option<&Bound<'_, PyAny>>) -> PyResult<(Vec<Vec<u32>
                 Err(err) if err.is_instance_of::<PyOverflowError>(item.py()) => {
                     return Err(out_of_range())
                 }
-                Err(_) => return Err(PyTypeError::new_err(COVERAGE_TYPE_ERROR)),
+                // Only a `TypeError` says "this is not an int-like at all",
+                // which is the one thing `COVERAGE_TYPE_ERROR` claims. Any
+                // other exception came out of caller code -- a custom
+                // `__index__` raising `ValueError`, or a `KeyboardInterrupt`
+                // arriving mid-extraction -- and swallowing it reported a shape
+                // error about an argument whose shape was fine, and discarded a
+                // Ctrl-C. `budget` propagates the same way.
+                Err(err) if err.is_instance_of::<PyTypeError>(item.py()) => {
+                    return Err(PyTypeError::new_err(COVERAGE_TYPE_ERROR))
+                }
+                Err(err) => return Err(err),
             };
             let id = u32::try_from(value).map_err(|_| out_of_range())?;
             set.push(id);

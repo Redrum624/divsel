@@ -57,7 +57,12 @@ def _owns_the_fixture(root: Path) -> bool:
         return True
     try:
         return "[workspace]" in (root / "Cargo.toml").read_text(encoding="utf-8")
-    except OSError:
+    except (OSError, UnicodeDecodeError):
+        # `UnicodeDecodeError` is a ValueError, not an OSError. The Rust twin
+        # reads this with `read_to_string(...).is_ok_and(...)`, which absorbs
+        # invalid UTF-8 and skips; catching only `OSError` here made the same
+        # tree raise out of `_load_golden` at import time and take down
+        # collection of this whole module. The two readers must agree.
         return False
 
 
@@ -148,6 +153,18 @@ def test_a_missing_fixture_only_skips_outside_the_repository_that_owns_it(tmp_pa
     package.mkdir()
     (package / "Cargo.toml").write_text('[package]\nname = "divsel"\n', encoding="utf-8")
     assert not _missing_fixture_is_fatal(False, package)
+
+    # A manifest that is not valid UTF-8 is not a workspace manifest either --
+    # and the two readers "must agree" (the docstring on `_owns_the_fixture`).
+    # The Rust twin reads it with `read_to_string(...).is_ok_and(...)`, which
+    # absorbs invalid UTF-8 and returns `Missing::Skip`; this reader caught only
+    # `OSError`, so the same tree raised `UnicodeDecodeError` -- a ValueError --
+    # out of `_load_golden` at import time and took down collection of this
+    # whole module, `test_golden_header` and both policy tests included.
+    mojibake = tmp_path / "mojibake"
+    mojibake.mkdir()
+    (mojibake / "Cargo.toml").write_bytes(b"[workspace]\nname = \xff\xfe\n")
+    assert not _missing_fixture_is_fatal(False, mojibake)
 
     # And where the fixture IS reachable, the tree it sits in must be one the
     # policy calls an owner -- a missing file there is a broken checkout, never

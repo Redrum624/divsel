@@ -110,6 +110,23 @@ def sweep_ceiling(diameter: str) -> float:
     return 4.0 if diameter == "approx" else 2.0
 
 
+def sweep_bound(diameter: str, eps: float) -> float:
+    """The sweep's ceiling `c / eps`, exactly as `verify_hand` builds it.
+
+    One function rather than two copies. The test that drives the widened
+    ceiling used to spell the division out again as
+    `sweep_ceiling(...) / np.float32(0.1)` -- a numpy float32 divide, where this
+    one is a float64 divide of a float32-rounded `eps` (`20.0` against
+    `19.99999970197678`). At `eps = 0.1` both round to the same 32- and 39-entry
+    grids, so the test passed while asserting about a grid the function under
+    test does not necessarily construct; at an `eps` where the float32 rounding
+    of `c / eps` crosses a grid step it would assert about the wrong one. The
+    generator's own rule is that a reimplementation is checked against the
+    library expression, never against a second copy of itself.
+    """
+    return sweep_ceiling(diameter) / float(np.float32(eps))
+
+
 def _normalise(rows: list[list[float]]) -> list[list[float]]:
     out = []
     for row in rows:
@@ -980,9 +997,7 @@ def verify_hand(case: dict, out: dict) -> None:
     if hand.interval is not None:
         lo, hi = hand.interval
         grid = thresholds_f32(
-            hand.d_max,
-            case["eps"],
-            sweep_ceiling(case["diameter"]) / float(np.float32(case["eps"])),
+            hand.d_max, case["eps"], sweep_bound(case["diameter"], case["eps"])
         )
         winners = [t for t in grid if lo < t <= hi]
         if not winners:

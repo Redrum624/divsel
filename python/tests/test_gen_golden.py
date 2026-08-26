@@ -159,8 +159,20 @@ def test_verify_hand_uses_the_widened_ceiling_under_approx():
     """
     gen = _gen()
 
-    exact_grid = gen.thresholds_f32(1.0, 0.1, gen.sweep_ceiling("exact") / np.float32(0.1))
-    approx_grid = gen.thresholds_f32(1.0, 0.1, gen.sweep_ceiling("approx") / np.float32(0.1))
+    # `gen.sweep_bound` is the expression `verify_hand` itself uses. Spelling
+    # the division out here again as `sweep_ceiling(...) / np.float32(0.1)` was
+    # a numpy float32 divide (bounds 20.0 / 40.0) against verify_hand's float64
+    # one (19.99999970197678 / 39.99999940395356): the same grids at eps = 0.1
+    # by coincidence, and a test asserting about a grid the function under test
+    # does not build at any eps where that rounding crosses a step.
+    exact_grid = gen.thresholds_f32(1.0, 0.1, gen.sweep_bound("exact", 0.1))
+    approx_grid = gen.thresholds_f32(1.0, 0.1, gen.sweep_bound("approx", 0.1))
+    # The two divides are genuinely different numbers, so "call the same
+    # function" is not a distinction without a difference. (A 4000-point sweep
+    # of eps in (0, 1] found no grid whose *length* they disagree on, so nothing
+    # was miscomputed -- the point is that there is now one expression, checked
+    # here, instead of a second copy that could drift.)
+    assert gen.sweep_bound("exact", 0.1) != float(gen.sweep_ceiling("exact") / np.float32(0.1))
     assert approx_grid[: len(exact_grid)] == exact_grid, "the grids must be nested"
     assert len(approx_grid) > len(exact_grid), "the widening must add entries"
 

@@ -10,13 +10,17 @@ def test_import():
     assert divsel.__version__ == "0.1.0"
 
 
-def _import_in_child(extra_path: str | None = None) -> subprocess.CompletedProcess:
+def _import_in_child(
+    extra_path: str | None = None, break_listdir: bool = False
+) -> subprocess.CompletedProcess:
     """Import ``divsel`` with ``divsel._divsel`` refused, in a child process.
 
     A meta path finder reproduces "the extension will not import" without
     touching the installation, and the child keeps this process's own import
     intact. ``extra_path`` is prepended to ``sys.path``, so a copy of the package
     with no compiled module next to it can be imported instead of the real one.
+    ``break_listdir`` additionally makes ``os.listdir`` raise, which is the only
+    way to reach ``_extension_files``'s ``except OSError``.
     """
     code = (
         "import sys\n"
@@ -29,7 +33,15 @@ def _import_in_child(extra_path: str | None = None) -> subprocess.CompletedProce
         "            raise ImportError('DLL load failed: a dependency is missing')\n"
         "        return None\n"
         "sys.meta_path.insert(0, Block())\n"
-        "try:\n"
+        + (
+            "import os\n"
+            "def _boom(path):\n"
+            "    raise PermissionError(path)\n"
+            "os.listdir = _boom\n"
+            if break_listdir
+            else ""
+        )
+        + "try:\n"
         "    import divsel\n"
         "except ImportError as exc:\n"
         "    print(exc)\n"
@@ -95,3 +107,20 @@ def test_a_genuinely_missing_extension_still_points_at_maturin_develop(tmp_path)
     assert "is not built" in proc.stdout
     assert "maturin develop" in proc.stdout
     assert "DLL load failed: a dependency is missing" in proc.stdout
+
+
+def test_an_unreadable_package_directory_does_not_replace_the_import_error():
+    """``_extension_files``'s ``except OSError`` arm, which nothing drove.
+
+    The listing exists to tell "present but unloadable" from "not built", and it
+    is itself a filesystem call: a package directory that cannot be listed
+    (permissions, a dead network share) would otherwise raise a
+    ``PermissionError`` *from inside the handler*, replacing the ImportError the
+    user needs to see with an unrelated one. It must degrade to "no extension
+    found" -- the conservative answer -- and still repeat the original message.
+    """
+    proc = _import_in_child(break_listdir=True)
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    assert "is not built" in proc.stdout
+    assert "DLL load failed: a dependency is missing" in proc.stdout
+    assert "PermissionError" not in proc.stdout

@@ -14,6 +14,8 @@ from __future__ import annotations
 
 from typing import Any
 
+import numpy as np
+
 __all__ = [
     "MIN_EPS",
     "DivselFallbackWarning",
@@ -31,13 +33,59 @@ MIN_EPS = 2.0**-23
 
 
 class DivselFallbackWarning(UserWarning):
-    """An adapter could not obtain embeddings and fell back to plain top-k.
+    """An adapter could not obtain usable embeddings and fell back to plain top-k.
 
-    Emitted (unless ``strict=True``, which raises ``ValueError`` instead) when
-    a ``DivselRetriever``'s vector store exposes no embeddings, or a
-    ``DivselNodePostprocessor`` gets nodes without embeddings and has no
-    ``embed_model``. The fallback result is NOT diversified.
+    Emitted (unless ``strict=True``, which raises ``ValueError`` instead)
+    whenever an adapter cannot get one usable vector per candidate. Every
+    reason, so that this list is not shorter than the code's:
+
+    * no embeddings to ask -- a ``DivselRetriever``'s ``vectorstore.embeddings``
+      is ``None`` or itself raises ``NotImplementedError``, or a
+      ``DivselNodePostprocessor`` gets nodes without embeddings and has no
+      ``embed_model``;
+    * an embedding hook raises ``NotImplementedError`` (``embed_query``,
+      ``embed_documents``, ``similarity_search_by_vector``,
+      ``get_text_embedding_batch``);
+    * a hook returns the wrong number of vectors -- **how many**, not what they
+      look like: three vectors for twelve documents used to diversify over a
+      prefix, and thirteen used to index past the end;
+    * a hook returns vectors of an unusable **shape**: not a rectangular
+      ``(n, d)`` block of numbers with ``d >= 1``. One flat list of the right
+      length, ragged rows, or non-numeric entries all land here rather than as
+      a raw numpy ``AxisError``/``ValueError`` or a binding ``TypeError``.
+
+    The fallback result is NOT diversified.
     """
+
+
+def _vectors_or_reason(raw: Any, count: int, source: str, noun: str):
+    """``(vectors, None)`` if ``raw`` is a usable ``(count, d)`` float32 matrix.
+
+    Otherwise ``(None, reason)``, where ``reason`` is a sentence naming
+    ``source`` and the ``count`` ``noun`` it had to cover -- for the adapters'
+    shared warn / ``strict=True`` fallback.
+
+    Both adapters used to check only ``len(raw) == count`` and hand the rest to
+    ``np.ascontiguousarray``. That leaves three ways for an embedding hook to
+    escape the fallback with a raw exception from inside numpy or the binding:
+    a flat list of the right length (rank 1 -- ``np.linalg.norm(v, axis=1)``
+    raises ``AxisError``, and ``gist_select`` raises ``TypeError`` about a
+    C-contiguous ``(n, d)`` array), ragged rows (``ValueError: setting an array
+    element with a sequence``), and non-numeric entries. The check lives here
+    so the two twins cannot answer differently.
+    """
+    if len(raw) != count:
+        return None, f"{source} returned {len(raw)} vectors for {count} {noun}"
+    try:
+        vectors = np.ascontiguousarray(raw, dtype=np.float32)
+    except (TypeError, ValueError) as exc:
+        return None, f"{source} did not return a rectangular block of numbers: {exc}"
+    if vectors.ndim != 2 or vectors.shape[0] != count or vectors.shape[1] < 1:
+        return (
+            None,
+            f"{source} returned shape {vectors.shape}, not ({count}, d) with d >= 1",
+        )
+    return vectors, None
 
 
 def __getattr__(name: str) -> Any:

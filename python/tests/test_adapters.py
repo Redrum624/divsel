@@ -959,10 +959,25 @@ def test_min_eps_is_the_cores_own_floor_and_is_accepted():
 
     assert MIN_EPS == float(np.finfo(np.float32).eps) == 2.0**-23
     # The library itself accepts exactly that value, and nothing below it.
-    x = np.ascontiguousarray(_fixture_vectors(), dtype=np.float32)
-    assert gist_select(x, None, k=2, eps=MIN_EPS, metric="cosine")
+    #
+    # On a point set with a positive diameter, `eps=MIN_EPS` is the exact worst
+    # case `_divsel.pyi` warns about -- 139 548 968 thresholds and one greedy
+    # run each. Measured on the 12x4 fixture: 16.0 s and 3772 MiB of peak
+    # working set at 16 rayon threads, 46.8 s and the same 3771 MiB at 4 (a
+    # standard GitHub runner), and this file's three calls were 84% of the whole
+    # Python suite's wall clock in every one of the 12 CI python cells. All of
+    # it for an assertion about a constant.
+    #
+    # Coincident points make `d_max == 0`, which skips the sweep entirely
+    # (CONFORMANCE rule 5) while still running every check `eps` passes through,
+    # so acceptance is proved in microseconds and the rejection below is
+    # unchanged.
+    coincident = np.ascontiguousarray(
+        np.tile(_fixture_vectors()[0], (3, 1)), dtype=np.float32
+    )
+    assert gist_select(coincident, None, k=2, eps=MIN_EPS, metric="cosine")
     with pytest.raises(ValueError):
-        gist_select(x, None, k=2, eps=MIN_EPS * 0.5, metric="cosine")
+        gist_select(coincident, None, k=2, eps=MIN_EPS * 0.5, metric="cosine")
 
     def installed(module: str) -> bool:
         # `find_spec("llama_index.core")` raises when the parent package is
@@ -972,19 +987,170 @@ def test_min_eps_is_the_cores_own_floor_and_is_accepted():
         except ModuleNotFoundError:
             return False
 
+    # Each adapter accepts MIN_EPS on its `eps` field and forwards it to the
+    # core -- on a coincident candidate set, for the reason above.
     if installed("langchain_core"):
         from divsel.adapters.langchain import DivselRetriever
 
         ns = _lc_edge()
+
+        class OneVector(ns.Partial):
+            def embed_documents(self, texts):
+                return [TABLE[TEXTS[0]] for _ in texts]
+
         docs = DivselRetriever(
-            vectorstore=ns.Store(ns.Partial()), k=4, eps=MIN_EPS
+            vectorstore=ns.Store(OneVector()), k=4, eps=MIN_EPS
         ).invoke(QUERY_TEXT)
         assert len(docs) <= 4
     if installed("llama_index.core"):
         from divsel.adapters.llamaindex import DivselNodePostprocessor
 
         ns = _li()
+        nodes = ns.make_nodes()
+        for node in nodes:
+            node.node.embedding = list(TABLE[TEXTS[0]])
         out = DivselNodePostprocessor(k=4, eps=MIN_EPS).postprocess_nodes(
-            ns.make_nodes(), query_str=QUERY_TEXT
+            nodes, query_str=QUERY_TEXT
         )
         assert len(out) <= 4
+
+
+# --------------------------------------------------------------------------- #
+# The other half of "the wrong number of vectors": the wrong SHAPE             #
+# --------------------------------------------------------------------------- #
+
+
+@pytest.mark.parametrize(
+    "shape",
+    ["flat", "ragged", "strings", "empty_rows"],
+)
+def test_langchain_falls_back_when_embed_documents_returns_an_unusable_shape(shape):
+    """The count guard checks only ``len``; rank and homogeneity escaped it.
+
+    Measured before this guard, with a store returning 12 documents:
+
+    * one flat 12-element vector (right count, rank 1) raised
+      ``numpy.exceptions.AxisError: axis 1 is out of bounds for array of
+      dimension 1`` from ``np.linalg.norm(v, axis=1)`` -- no warning, and
+      ``strict=True`` produced the same ``AxisError`` instead of the promised
+      ``DivselRetriever(strict=True) cannot diversify: ...`` ``ValueError``;
+    * a ragged return raised ``ValueError: setting an array element with a
+      sequence. The requested array has an inhomogeneous shape``.
+
+    Both are the exact failure mode the count guard's own comment names, with
+    only its zero-length instance closed.
+    """
+    pytest.importorskip("langchain_core")
+    from divsel.adapters import DivselFallbackWarning
+    from divsel.adapters.langchain import DivselRetriever
+
+    ns = _lc_edge()
+
+    class BadShape(ns.Partial):
+        def embed_documents(self, texts):
+            rows = [TABLE[t] for t in texts]
+            if shape == "flat":
+                return [float(i) / 10.0 for i in range(len(rows))]
+            if shape == "ragged":
+                return [rows[0][:2]] + rows[1:]
+            if shape == "strings":
+                return [["a"] * len(rows[0]) for _ in rows]
+            return [[] for _ in rows]
+
+    store = ns.Store(BadShape())
+    retriever = DivselRetriever(vectorstore=store, k=4)
+    with pytest.warns(DivselFallbackWarning, match="embed_documents"):
+        docs = retriever.invoke(QUERY_TEXT)
+    assert [d.page_content for d in docs] == [TEXTS[i] for i in RELEVANCE_ORDER[:4]]
+
+    strict = DivselRetriever(vectorstore=store, k=4, strict=True)
+    with pytest.raises(ValueError, match="cannot diversify"):
+        strict.invoke(QUERY_TEXT)
+
+
+@pytest.mark.parametrize("shape", ["flat", "ragged", "strings", "empty_rows"])
+def test_llamaindex_falls_back_when_the_embed_model_returns_an_unusable_shape(shape):
+    """The LlamaIndex twin: same guard, same gap.
+
+    Measured before this guard, with 12 score-carrying nodes and a model
+    returning ``[0.1] * len(texts)`` (right count, rank 1): ``TypeError:
+    vectors must be a C-contiguous float32 array of shape (n, d)`` straight out
+    of the binding, on both the warn path and the ``strict=True`` path.
+    """
+    pytest.importorskip("llama_index.core")
+    from divsel.adapters import DivselFallbackWarning
+    from divsel.adapters.llamaindex import DivselNodePostprocessor
+
+    ns = _li()
+    nodes = ns.make_nodes(with_embeddings=False)
+
+    class BadShape(ns.TinyEmbedModel):
+        def get_text_embedding_batch(self, texts, **kwargs):
+            rows = [TABLE[t] for t in texts]
+            if shape == "flat":
+                return [float(i) / 10.0 for i in range(len(rows))]
+            if shape == "ragged":
+                return [rows[0][:2]] + rows[1:]
+            if shape == "strings":
+                return [["a"] * len(rows[0]) for _ in rows]
+            return [[] for _ in rows]
+
+    pp = DivselNodePostprocessor(k=4, embed_model=BadShape())
+    with pytest.warns(DivselFallbackWarning, match="get_text_embedding_batch"):
+        out = pp.postprocess_nodes(nodes, query_str=QUERY_TEXT)
+    assert out == _topk_by_score(nodes, 4)
+
+    strict = DivselNodePostprocessor(k=4, embed_model=BadShape(), strict=True)
+    with pytest.raises(ValueError, match="cannot diversify"):
+        strict.postprocess_nodes(nodes, query_str=QUERY_TEXT)
+
+
+def test_llamaindex_falls_back_when_the_nodes_own_embeddings_are_unusable():
+    """The node-carried branch had no guard at all -- no embed_model involved.
+
+    ``raw_vectors = node_embeddings`` went straight into
+    ``np.ascontiguousarray``: one node whose embedding is dimension 2 while the
+    rest are dimension 4 raised a raw ``ValueError: setting an array element
+    with a sequence`` on both the warn path and the ``strict=True`` path.
+    """
+    pytest.importorskip("llama_index.core")
+    from divsel.adapters import DivselFallbackWarning
+    from divsel.adapters.llamaindex import DivselNodePostprocessor
+
+    ns = _li()
+
+    nodes = ns.make_nodes()
+    nodes[0].node.embedding = [0.1, 0.2]
+
+    pp = DivselNodePostprocessor(k=4)
+    with pytest.warns(DivselFallbackWarning, match="node.embedding"):
+        out = pp.postprocess_nodes(nodes, query_str=QUERY_TEXT)
+    assert out == _topk_by_score(nodes, 4)
+
+    strict = DivselNodePostprocessor(k=4, strict=True)
+    with pytest.raises(ValueError, match="cannot diversify"):
+        strict.postprocess_nodes(nodes, query_str=QUERY_TEXT)
+
+
+def test_the_documented_fallback_reasons_cover_every_reason_the_code_emits():
+    """``help(DivselFallbackWarning)`` is the list a user reads.
+
+    It named two reasons -- no store embeddings, and nodes without embeddings
+    and no embed_model -- while the code emits several more: a hook that raises
+    ``NotImplementedError``, a wrong vector count, and a return whose shape is
+    not ``(n, d)``. Both adapter class docstrings carried the same short list.
+    """
+    from divsel.adapters import DivselFallbackWarning
+
+    doc = DivselFallbackWarning.__doc__
+    for phrase in ("NotImplementedError", "how many", "shape"):
+        assert phrase in doc, f"DivselFallbackWarning.__doc__ does not mention {phrase!r}"
+
+    for module, name in (
+        ("divsel.adapters.langchain", "DivselRetriever"),
+        ("divsel.adapters.llamaindex", "DivselNodePostprocessor"),
+    ):
+        framework = "langchain_core" if "langchain" in module else "llama_index.core"
+        pytest.importorskip(framework)
+        cls = getattr(importlib.import_module(module), name)
+        assert "shape" in cls.__doc__, f"{name} does not document the shape fallback"

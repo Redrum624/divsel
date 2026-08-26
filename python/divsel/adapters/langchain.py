@@ -22,7 +22,7 @@ from typing import Any, Literal
 import numpy as np
 
 from divsel import gist_select
-from divsel.adapters import MIN_EPS, DivselFallbackWarning
+from divsel.adapters import MIN_EPS, DivselFallbackWarning, _vectors_or_reason
 
 try:
     from langchain_core.callbacks import CallbackManagerForRetrieverRun
@@ -55,12 +55,15 @@ class DivselRetriever(BaseRetriever):
     shifted to be non-negative (``w = 1 + cos`` in ``[0, 2]``); for
     ``utility="facility_location"`` no weights are passed.
 
-    When embeddings are unavailable (``vectorstore.embeddings`` is ``None`` or
-    itself raises ``NotImplementedError``, or an ``embed_*`` call does) the
-    retriever warns
-    with :class:`~divsel.adapters.DivselFallbackWarning` and returns the plain
+    When usable embeddings are unavailable the retriever warns with
+    :class:`~divsel.adapters.DivselFallbackWarning` and returns the plain
     top-``k`` ``similarity_search`` result — not diversified. Set
-    ``strict=True`` to get a ``ValueError`` instead.
+    ``strict=True`` to get a ``ValueError`` instead. That covers
+    ``vectorstore.embeddings`` being ``None`` or itself raising
+    ``NotImplementedError``, any ``embed_*`` call raising it, and
+    ``embed_documents`` returning the wrong number of vectors or vectors of an
+    unusable shape (not a rectangular ``(n, d)`` block of numbers).
+    :class:`~divsel.adapters.DivselFallbackWarning` lists them all.
     """
 
     # Every field carries its constraint, so an unusable configuration is a
@@ -168,19 +171,18 @@ class DivselRetriever(BaseRetriever):
                 query, "embeddings.embed_documents is not implemented"
             )
 
-        # A return whose length does not match `docs` is a failure, not a
-        # shape: an empty list reached `np.linalg.norm(v, axis=1)` on a 1-D
-        # array and raised a raw numpy `AxisError`, a short one silently
-        # diversified over a prefix of `docs`, and a long one let `selected`
-        # index past the end of `docs` with an `IndexError`.
-        if len(doc_vecs) != len(docs):
-            return self._fallback(
-                query,
-                f"embeddings.embed_documents returned {len(doc_vecs)} vectors "
-                f"for {len(docs)} documents",
-            )
-
-        vectors = np.ascontiguousarray(doc_vecs, dtype=np.float32)
+        # A return that is not one usable vector per document is a failure, not
+        # a shape to be passed on: a short one silently diversified over a
+        # prefix of `docs`, a long one let `selected` index past the end with an
+        # `IndexError`, and a return of the right *length* but the wrong rank or
+        # ragged rows escaped as a raw numpy `AxisError`/`ValueError` or as the
+        # binding's `TypeError` -- past both the warn path and the strict path.
+        # `_vectors_or_reason` is shared with the LlamaIndex twin.
+        vectors, reason = _vectors_or_reason(
+            doc_vecs, len(docs), "embeddings.embed_documents", "documents"
+        )
+        if reason is not None:
+            return self._fallback(query, reason)
 
         if self.utility == "linear":
             v = vectors.astype(np.float64)

@@ -28,7 +28,11 @@ except ImportError as exc:
                 if name.startswith("_divsel.")
                 and name.endswith((".pyd", ".so", ".dylib"))
             )
-        except OSError:  # pragma: no cover - unreadable package directory
+        except OSError:
+            # A package directory that cannot be listed (permissions, a dead
+            # network share) must not replace the ImportError the caller needs
+            # with a PermissionError from inside this handler. "No extension
+            # found" is the conservative answer.
             return []
 
     _found = _extension_files()

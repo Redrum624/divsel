@@ -470,6 +470,58 @@ def test_coverage_item_id_above_i64_max_is_the_same_valueerror():
     assert gist_select(x, [[np.uint32(0)], [np.int64(3)]], k=1, utility="coverage")
 
 
+def test_a_coverage_id_whose_index_raises_propagates_that_exception():
+    """"The error keys on the exception, not on the argument's type" -- both ways.
+
+    `coverage_sets` maps `OverflowError` to the range `ValueError` above and
+    used to map *everything else* to the shape `TypeError`, so a
+    `KeyboardInterrupt` raised inside a custom `__index__` was discarded and
+    reported as "utilities ... must be a sequence of sequences of non-negative
+    int item ids". `budget` gets the same shape of call right (`Err(err) =>
+    Err(err)`), and `k=<that object>` propagates the Ctrl-C, so the two halves
+    of the same documented rule disagreed.
+    """
+    x = _random_vectors(2, 2)
+
+    class Raises:
+        def __init__(self, exc):
+            self._exc = exc
+
+        def __index__(self):
+            raise self._exc
+
+    for exc in (KeyboardInterrupt("ctrl-c in an id"), ValueError("a picky __index__")):
+        with pytest.raises(type(exc), match=str(exc)):
+            gist_select(x, [[0], [Raises(exc)]], k=1, utility="coverage")
+        # ... exactly as the same object raises through `k`.
+        with pytest.raises(type(exc), match=str(exc)):
+            gist_select(x, None, k=Raises(exc))
+
+    # And a plain non-int is still the shape TypeError, not a leaked one.
+    with pytest.raises(TypeError, match="sequence of sequences"):
+        gist_select(x, [[0], [object()]], k=1, utility="coverage")
+
+
+def test_an_unprintable_out_of_range_coverage_id_still_names_its_row():
+    """The `"<unprintable>"` arm of `out_of_range`, which nothing drove.
+
+    The range message interpolates `item.str()`, and `__str__` is caller code
+    that can fail. It must still be a `ValueError` naming the row, not a
+    secondary exception from inside the error path.
+    """
+    x = _random_vectors(2, 2)
+
+    class Unprintable:
+        def __index__(self):
+            return 2**200
+
+        def __str__(self):
+            raise RuntimeError("no str for you")
+
+    with pytest.raises(ValueError, match=r"coverage item id <unprintable> at row 1"):
+        gist_select(x, [[0], [Unprintable()]], k=1, utility="coverage")
+
+
 # --- round-2 gaps ------------------------------------------------------------
 
 # A 12x3 Gaussian set on which the farthest-point walk needs four double sweeps
@@ -602,3 +654,84 @@ def test_identical_rows_give_a_zero_diameter_through_the_binding():
     assert r["stage"] == "greedy"
     assert r["selected"] == [0, 1]
     assert r["f_value"] == r["g_value"]
+
+
+# --- round-4 gaps ------------------------------------------------------------
+
+
+def test_lambda_zero_with_an_infinite_div_is_g_not_nan():
+    """``lam == 0`` contributes a literal ``0.0``, never ``0.0 * div``.
+
+    ``Points::new`` validates coordinates, not distances, so a point set of
+    finite float32 coordinates far enough apart overflows the squared distance
+    and ``div`` is ``+inf``. ``0.0 * inf`` is ``nan``, and the stub used to
+    promise ``f_value == g_value + lam * div`` "exactly" -- which is ``nan``
+    here, so the promise was false on the one input the short circuit exists
+    for. ``docs/CONFORMANCE.md`` rule 18 is the port-facing statement, and no
+    fixture can pin it: every fixture input is a dyadic rational in [-4, 4].
+    """
+    x = np.ascontiguousarray(np.array([[-3.0e38], [3.0e38]], dtype=np.float32))
+    out = gist_select_full(x, None, k=2, lam=0.0, metric="euclidean")
+    assert out["selected"] == [0, 1]
+    assert np.isinf(out["div"]) and out["div"] > 0
+    assert np.isinf(out["d_max"])
+    assert out["f_value"] == out["g_value"] == 2.0
+    assert out["stage"] == "sweep"
+    # The literal formula, for the record: what a port transcribing it gets.
+    assert np.isnan(out["g_value"] + 0.0 * out["div"])
+
+    # A non-zero lam still forms the product, so f is legitimately infinite.
+    positive = gist_select_full(x, None, k=2, lam=1.0, metric="euclidean")
+    assert np.isinf(positive["f_value"])
+
+
+@pytest.mark.parametrize("metric", ["euclidean", "cosine"])
+@pytest.mark.parametrize("utility", ["linear", "facility_location"])
+def test_approx_diameter_works_for_every_metric_and_utility(metric, utility):
+    """``diameter="approx"`` outside euclidean + linear, which nothing covered.
+
+    Every ``diameter="approx"`` call in this file passed ``metric="euclidean"``
+    with the default utility, the one approx fixture is euclidean/linear, and
+    every Rust approx unit test was linear/euclidean -- so the whole cosine
+    approx path, and ``FacilityLocation`` built while the driver sweeps on
+    ``d_hat`` (CONFORMANCE rule 10's exception), were asserted by nothing.
+    """
+    x = _sweep_sensitive_vectors()
+    approx = gist_select_full(
+        x, None, k=3, metric=metric, utility=utility, diameter="approx",
+        diameter_sweeps=1,
+    )
+    exact = gist_select_full(x, None, k=3, metric=metric, utility=utility)
+
+    assert len(approx["selected"]) <= 3
+    assert len(set(approx["selected"])) == len(approx["selected"])
+    # d_hat is the reported diameter, and it lies in [d_max/2, d_max].
+    assert exact["d_max"] / 2.0 <= approx["d_max"] <= exact["d_max"]
+    if utility == "facility_location":
+        # Rule 10's exception, pinned: the two runs disagree about `d_max` (the
+        # sweep genuinely misses here) and agree bit-for-bit about `g`, because
+        # the similarity scale stays the EXACT diameter whatever the mode says.
+        assert approx["d_max"] < exact["d_max"], "the sweep must miss, or this pins nothing"
+        assert approx["selected"] == exact["selected"]
+        assert approx["g_value"] == exact["g_value"]
+
+
+def test_a_huge_diameter_sweeps_is_clamped_to_n_instead_of_hanging():
+    """``diameter_sweeps`` is unvalidated, and each sweep is ``O(n * d)``.
+
+    Measured on a five-point set in release: 1 sweep 8.7 us, 20e6 sweeps 3.46 s
+    -- strictly linear -- so ``diameter_sweeps=2**62`` was about 1e12 seconds
+    and hung the interpreter uninterruptibly. The core clamps to ``n``, which is
+    result-preserving: each sweep starts where the last ended, so the sequence
+    of starting points repeats within ``n`` steps.
+    """
+    x = _sweep_sensitive_vectors()
+    at_n = gist_select_full(
+        x, None, k=3, metric="euclidean", diameter="approx", diameter_sweeps=len(x)
+    )
+    for sweeps in (len(x) + 1, 2**62, 2**63 - 1):
+        out = gist_select_full(
+            x, None, k=3, metric="euclidean", diameter="approx",
+            diameter_sweeps=sweeps,
+        )
+        assert out == at_n, f"diameter_sweeps={sweeps}"
