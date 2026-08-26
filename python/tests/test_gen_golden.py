@@ -146,6 +146,54 @@ def test_approx_diameter_reimplementation_matches_the_library():
     assert gen._approx_diameter([[0.0]], 1, 3) == 0.0
 
 
+def test_verify_hand_uses_the_widened_ceiling_under_approx():
+    """``sweep_ceiling("approx")`` has to be what ``verify_hand`` predicts with.
+
+    No fixture reaches it: the only ``diameter="approx"`` case (case 20) carries
+    no ``Hand``, so ``verify_hand`` returns before the grid is ever built and
+    the widened ``4/eps`` ceiling is unexercised end to end. This drives the
+    function directly with a synthetic case, on an interval that lies *above*
+    the exact ceiling: under ``approx`` the grid reaches it, under ``exact`` it
+    does not -- so a regression that dropped the widening turns from silent into
+    a ``no grid threshold in`` failure.
+    """
+    gen = _gen()
+
+    exact_grid = gen.thresholds_f32(1.0, 0.1, gen.sweep_ceiling("exact") / np.float32(0.1))
+    approx_grid = gen.thresholds_f32(1.0, 0.1, gen.sweep_ceiling("approx") / np.float32(0.1))
+    assert approx_grid[: len(exact_grid)] == exact_grid, "the grids must be nested"
+    assert len(approx_grid) > len(exact_grid), "the widening must add entries"
+
+    lo, winner = exact_grid[-1], approx_grid[-1]
+    hand = gen.Hand(
+        selected=[0, 1],
+        f=1.0,
+        g=1.0,
+        div=1.0,
+        stage="sweep",
+        d_max=1.0,
+        interval=(lo, winner),
+    )
+    case = {"name": "synthetic_approx", "eps": 0.1, "diameter": "approx", "_hand": hand}
+    out = {
+        "selected": [0, 1],
+        "stage": "sweep",
+        "f_value": 1.0,
+        "g_value": 1.0,
+        "div": 1.0,
+        "d_max": 1.0,
+        "threshold": winner,
+    }
+
+    gen.verify_hand(case, out)  # the widened ceiling reaches `winner`
+
+    # The same interval under the paper's `2/eps` ceiling contains no grid
+    # entry at all, which is exactly what predicting an approx case with the
+    # exact ceiling would do.
+    with pytest.raises(SystemExit, match="no grid threshold in"):
+        gen.verify_hand({**case, "diameter": "exact"}, out)
+
+
 def test_margin_check_accepts_the_generated_case_and_rejects_a_wrong_selection():
     gen = _gen()
     case = gen.hand_cases()[0]

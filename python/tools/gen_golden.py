@@ -101,7 +101,9 @@ def sweep_ceiling(diameter: str) -> float:
     holds `d_hat >= d_max/2` and the grid still has to reach the true diameter.
     Predicting a hand case's threshold with `2/eps` under approx would miss
     every grid entry above about `d_hat`. No approx case carries a `Hand` today,
-    which is exactly why this has to be right before one does.
+    which is exactly why this has to be right before one does -- and why the
+    only thing that exercises the widened ceiling is a unit test driving
+    `verify_hand` directly (`test_gen_golden.py`), not a fixture.
     """
     if diameter not in {"exact", "approx"}:
         raise ValueError(f"unknown diameter mode {diameter!r}")
