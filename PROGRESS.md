@@ -2,8 +2,8 @@
 
 Plan: `docs/superpowers/plans/2026-08-21-divsel-v0.1.md` · Execution: Subagent-Driven Development on branch `feat/v0.1`.
 
-CURRENT LOT: FINAL REVIEW
-NEXT ACTION: Final review — cleanup wave DONE (65fc69a, all green). The adversarial review rounds have NOT run (all 12 reviewers died on a session limit). Resume: re-dispatch the review-only loop from 65fc69a (3 dimensions x rounds, fresh implementer per round, exit on 2 consecutive clean, cap 4); the checklist and dimension scopes are in the workflow script `divsel-final-review-*.js`. After it converges: hand the user `docs/RELEASE.md`.
+CURRENT LOT: COMPLETE — awaiting the user's publish decisions
+NEXT ACTION: The plan is COMPLETE at 223982c and everything is green locally (cargo 117+5+3+3+4; pytest 153 / 225; golden byte-identical; clippy/fmt/rustdoc clean; cargo publish --dry-run passes). All remaining work is the USER's, in `docs/RELEASE.md`: merge to main, flip the repo public if desired, `cargo login` + publish, PyPI trusted publishing, tag v0.1.0. NOTE: GitHub Actions minutes appear exhausted on this private repo (runs fail in ~5 s with zero steps and no logs) — check billing before relying on the release workflow, which has never been triggered.
 
 | Lot | Goal (one line) | Status | Commit SHA | Files touched | Next concrete action |
 |-----|-----------------|--------|-----------|---------------|----------------------|
