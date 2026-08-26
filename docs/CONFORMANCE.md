@@ -116,7 +116,7 @@ Two properties worth stating explicitly:
 * At `lam == 0` the bound collapses to `tol(expected_g)`, which is exactly
   right: rule 18 makes `f` equal `g` there, `div` included when `div` is `+inf`.
 
-#### It does not loosen the committed contract, and it cannot accept a wrong answer
+#### It does not loosen the committed contract, and where it does give ground
 
 On the 22 cases the derived bound is **identical** to the old one on 17 of them
 and never more than **1.17x** larger (case 21, `lam = 1`, `div = 0`); the
@@ -132,24 +132,79 @@ magnitude, measured rather than asserted:
 | the generator's own robustness margin (`MARGIN = 1e-4` relative, `python/tools/gen_golden.py`) | the new bound consumes at most **1.17%** of it, on every one of the 22 cases |
 | smallest discrete step the objective can take — `1` for coverage and uniform linear, `1/64` for the dyadic-weight linear cases | **>= 819x** the largest bound in the file |
 
-So an error big enough to be a bug — a broken tie-break, a strict `>` where the
-fold is `>=`, the wrong FacilityLocation scale — moves `f` by at least ~600
-times what the rule tolerates. Perturbing every `expected_f` by `1e-4` relative
-(the generator's margin floor) or by the case's smallest possible `Δg` is
-rejected on all 22 cases.
+So on the 22 an error big enough to be a bug — a broken tie-break, a strict `>`
+where the fold is `>=`, the wrong FacilityLocation scale — moves `f` by at least
+~600 times what the rule tolerates. Perturbing every `expected_f` by `1e-4`
+relative (the generator's margin floor) or by the case's smallest possible `Δg`
+is rejected on all 22 cases.
 
-**The derived bound is never the sole detector, which is why widening it is
-cheap.** `expected_g` and `expected_div` keep their own, unchanged, tight
-bounds and are checked on every case. A port whose `g` is wrong fails on `g`;
-a port whose `div` is wrong fails on `div`; neither outcome depends on what the
-`f` check does. What the `f` check adds is a consistency check on the
-*combination* — the wrong `lam`, the wrong sign, `0 * inf` producing `NaN`
-(rule 18) — and every one of those is gross, not marginal. Nor does the
-tolerance gate `expected_selected` or `expected_stage`: those are exact-equality
-fields, and a wrong answer that happens to tie on `f` — which is what the five
-margin-exempt cases are built from — is caught there.
+**What the `f` check adds.** `expected_g` and `expected_div` keep their own,
+unchanged, tight bounds and are checked on every case, so a port whose `g` is
+wrong fails on `g` and a port whose `div` is wrong fails on `div` whatever the
+`f` check does. What `f` adds on top is the only check on the *combination* —
+the wrong `lam`, the wrong sign, `0 * inf` producing `NaN` (rule 18) — and
+there it is frequently the **sole** detector, precisely because an error in the
+combination alone leaves `selected`, `stage`, `g`, `div`, `threshold` and
+`d_max` all correct. Measured by injecting the bug into a port and grading the
+result against the fixture: a port that doubles `lam` is caught on 20 of the 22
+cases and on **16** of those by the `f` check alone — case 1 reports the same
+`[0, 3]`, the same `"sweep"`, `g = 2`, `div = 3`, and the same `threshold` and
+`d_max`, differing only in `f = 8` against the expected `5`. A sign flip is
+caught on 20 cases, **7** of them by `f` alone. (An earlier revision of this
+section asserted the opposite — that the `f` check is never the sole detector.
+That was wrong, and it understated the field; the correction is this paragraph.)
+Nor does the tolerance gate `expected_selected` or `expected_stage`: those are
+exact-equality fields, and a wrong answer that happens to tie on `f` — which is
+what the five margin-exempt cases are built from — is caught there.
 
-That matters most in the regime the fix exists for. At `lam = 64` with a
+**Where the `f` check is blind, and why that is acceptable.** When `lam * div`
+sinks to the f32 noise floor, no bound on `f` can separate a wrong `lam` or a
+flipped sign from rounding: the entire diversity term is then smaller than the
+budget the primitives themselves need. A divsel-verified instance — two exact
+duplicate rows, `[[-3.984375, 0.875], [-3.984375, 0.875]]`, cosine, uniform
+linear, `k = 2`, `lam = 64`, `eps = 0.1` — has divsel report `selected [0, 1]`,
+`stage "sweep"`, `g = 2.0`, `div = 5.960464477539063e-08` and
+`f = 2.0000038146972656`. Flip the sign of the diversity term and `f` moves by
+`7.63e-06`:
+
+```
+old bound  tol(f)                    = 2.000e-06   -> REJECTED (3.81x over)
+new bound  tol(g) + lam * tol(div)   = 6.600e-05   -> accepted (11.6% of budget)
+```
+
+and because `g`, `div`, `threshold`, `d_max`, `selected` and `stage` are all
+unchanged, the **whole contract** then passes a sign-flipped port. Dropping,
+doubling or halving `lam` escapes the same way (halving escaped the old rule
+too). Solving `2 * lam * div <= tol(g) + lam * tol(div)` puts the escape band at
+`div ∈ (1.6e-08, 5.2e-07)` for `lam = 64`, `g = 2`; over 60,000 random dyadic
+exact-duplicate cosine pairs at that `lam`, **13,041 (21.7%)** land inside it.
+
+**No committed case is anywhere near that band, so the conformance verdict does
+not move.** All 22 run at `lam <= 4`, and their smallest nonzero `expected_div`
+is `1/64` — five orders above the band's ceiling. Measured, a sign-flipped port
+run against case 1 returns `[0, 1]` instead of `[0, 3]` and `f = 1.5` against
+`5.0`, missing the `f` bound of `5.0e-06` by a factor of **7e5** and missing
+`selected`, `div` and `threshold` besides. The band is reachable only by a
+port's own generator, and only in the regime below.
+
+This is a real loss and it is stated as one. What makes it acceptable is that
+inside the band the bug is **unobservable**, not merely untolerated: the
+diversity term is at most `1.7e-05` of `f` there, four to five orders below the
+smallest discrete step the objective can take (`1`, or `1/64` for dyadic
+weights), so it cannot change which set is selected either. Measured out of
+fixture over 1,500 random instances (five vector families, both metrics, `lam`
+up to 64): on the 240 whose `div` fell below `5.2e-07`, a sign flip and all
+three wrong-`lam` variants left `selected` and `stage` identical on **every**
+one — no field of this contract, tolerance-gated or exact, could have seen them.
+And the old rule's detection there was incidental rather than principled: on
+those same exact-duplicate pairs it fired on 21.7% of the draw and was blind on
+the other 78.3%, where `div` is exactly `0` and a sign flip changes nothing at
+all. The derived bound trades that incidental 21.7% for not failing correct
+ports at high `lam`, which is the defect it exists to fix. Read the `f` check
+as: **it polices the combination wherever the combination is observable, and
+nowhere else.**
+
+That trade is worth quantifying at the fixture scale too. At `lam = 64` with a
 near-zero `div`, the bound is `~6.6e-05` while a `1e-4`-relative change in `f`
 is `~2.0e-04`: about **3x** of headroom on that yardstick, not the 85x the 22
 committed cases enjoy (they run at `lam <= 4`). Stated honestly, the yardstick
@@ -158,6 +213,100 @@ is the weak part there, not the bound: with `f` dominated by `g`, a `1e-4`
 `1e-6` bound catches that a hundred times sooner. Against the yardstick that
 actually applies to a wrong *answer* — the smallest discrete step the objective
 can take, `1/64` for dyadic weights — the headroom at `lam = 64` is **237x**.
+
+#### `expected_threshold` is a selected grid entry, so its bound is not a tolerance
+
+`tol(x)` reads like a measurement tolerance on every row of the table above, and
+for `g`, `div`, `d_max` and `f` it is one. For `expected_threshold` under
+`stage == "sweep"` it is not, because that `threshold` is not a quantity a port
+computes: it is a *choice* a port makes — which entry of the threshold set
+(rule 7, or rule 6 under `exhaustive_thresholds`) rule 2's non-strict fold kept.
+Its error is therefore **quantized**: consecutive geometric entries stand a
+factor `1 + eps` apart — `9.09%` of the entry at the default `eps = 0.1`, a
+factor of two at `eps = 1` — so a port either picks the same entry and agrees to
+the last ulp, or picks a neighbour and misses by five orders of magnitude.
+Measured: a correct float64 recomputation of all 22 cases reproduces every
+`threshold` to within `3.35e-08` relative, **3.4%** of the `1e-6` bound, while
+the nearest neighbouring entry sits `90,909x` that bound away. There is no
+middle ground for the bound to sit in. (The other two stages are exempt from all
+of this: `threshold` is exactly `0` for `"greedy"` and `d_max`/`d_hat` — a
+measured quantity — for `"diameter_pair"`, where `tol` means what it usually
+means.)
+
+**The false-failure mode that follows.** Which entry the fold keeps is decided
+by `f`, and rule 2's comparison is non-strict, so when two entries attain the
+**same** `f` the larger one wins. Where that tie is *exact* the answer is
+arithmetic-independent. Where it is a tie only to within an ulp, divsel's f32
+kernel and a correct float64 port can break it differently — and then
+`threshold` moves by a whole grid gap while `selected`, `stage`, `g`, `div` and
+`f` all still agree, every one of them well inside its own budget. The port is
+not wrong: the two answers are equally valid readings of a tie that the f32/f64
+boundary decided. It is the mechanism of
+[Degenerate geometry](#degenerate-geometry-divsels-f32-distances-are-not-the-exact-ones)
+— a last ulp resolving a discrete choice — reaching a sixth field.
+
+**The contract's answer: document it, do not widen the rule.** The rule in the
+table is deliberately **unchanged**, `abs(actual − expected) <= tol(expected)`
+against the single expected entry. The two obvious relaxations were considered
+and rejected on measurement:
+
+* *Accept any grid entry within tolerance of the expected one* — a no-op. No two
+  entries are ever within `1e-6` of each other; they are `1 + eps` apart by
+  construction. It admits nothing the present rule does not already admit.
+* *Skip the field when a neighbouring entry is close* — mis-aimed. Neighbouring
+  entries are never close; what is close is the **`f` values** two entries
+  produce. The predicate has to be stated on `f`, and once it is, it is a
+  diagnostic a port runs on its own instances (below), not a licence the
+  fixture can grant.
+
+Widening past either would cost real detection, and this field is where that
+detection lives: a port sweeping the **wrong grid** is caught almost entirely
+through `expected_threshold`. Measured on the 22, a geometric grid built with
+one entry too few is caught on **8 cases** — 1, 3, 4, 5, 7, 9, 10, 18 — and on
+all 8 it is `expected_threshold` that catches it; one entry too many is caught
+on case 7, also through `expected_threshold`. Any rule that accepted a
+neighbouring entry would forfeit all nine.
+
+**Why the 22 are safe to compare on `threshold`, measured rather than assumed.**
+Enumerate each case's threshold set, evaluate `f` at every entry, and inspect
+the entries tied for the best `f`:
+
+| | measured over the 22 |
+|---|---|
+| cases reporting `stage == "sweep"` on the geometric grid | 14 (cases 19 and 20 use the exhaustive set and the approx grid; the rest report `"greedy"` or `"diameter_pair"`, where `threshold` is `0` or `d_max`) |
+| of those, cases where **every** entry tied at the best `f` yields the *same* selection — so the fold's answer is the largest of them whatever the arithmetic | **12** |
+| cases where entries with *distinct* selections tie | **2** — cases 2 and 18, two of the five margin-exempt tie cases, whose ties are **exact** dyadic arithmetic (1-D dyadic coordinates give dyadic distances) and so cannot be broken by any width |
+| a correct float64 port's `threshold`, all 22 | matches, worst case `3.35e-08` relative — 3.4% of the bound |
+
+No committed case reports a `threshold` decided by a breakable tie.
+`crates/divsel/tests/golden.rs::the_reported_threshold_is_never_decided_by_a_breakable_tie`
+pins that, so a future fixture that introduced one would fail rather than ship.
+
+**What a port's own harness should do about it**, in the same shape as the
+Finding-B advice below:
+
+* **Provoking families:** the degenerate geometry of the section below — exact
+  duplicates, exactly-antipodal unit vectors, signed-axis vectors — and more
+  generally any instance where two entries produce *different* selections whose
+  `f` values coincide to within an ulp. Searched here over 9,500 instances
+  deliberately biased towards those families (2,500 broad, 3,000 degenerate,
+  4,000 antipodal at `eps = 1`), the mode did not occur once, so it is **rarer**
+  than a `selected`/`stage` disagreement, not more common. Rarity is the reason
+  it is documented rather than engineered around.
+* **How to detect it instead of arguing about it:** build your own threshold
+  set, evaluate `f` at every entry, and collect the entries attaining the best
+  `f`. If they all produce the same selection, `threshold` is a safe comparison
+  on that instance. If two entries with *different* selections tie to within an
+  ulp, `threshold` is decided by that tie and a disagreement there is a false
+  failure — same verdict and same remedy as
+  [Degenerate geometry](#degenerate-geometry-divsels-f32-distances-are-not-the-exact-ones):
+  re-run your Algorithm 1 on divsel's f32 distance matrix and see whether
+  `threshold` then matches.
+* **What this is not:** a licence to skip the field. A `threshold` disagreement
+  on an instance whose best-`f` entry is unique is a real bug — most likely the
+  wrong grid count (rule 7), a strict `>` in the sweep fold (rule 2), or a
+  strict `>` in the candidate test (rule 15). This field is the primary
+  detector for all three.
 
 What each field *means* is fixed by the contract below: `expected_f`,
 `expected_g`, `expected_div` are `f(S)`, `g(S)` and `div(S)` of the reported
@@ -178,6 +327,9 @@ for (const c of g.cases) {
   assert.deepEqual(r.selected, c.expected_selected);
   assert.equal(r.stage, c.expected_stage);
   // `f` is derived from `g` and `div`, so its bound is too: lam multiplies div's.
+  // `threshold` under stage "sweep" is a chosen grid entry, not a measurement:
+  // its bound never decides anything, and on your own instances it can report a
+  // false failure -- see "`expected_threshold` is a selected grid entry" above.
   const bounds: [number, number, number][] = [
     [r.f,         c.expected_f,         tol(c.expected_g) + c.lam * tol(c.expected_div)],
     [r.g,         c.expected_g,         tol(c.expected_g)],
@@ -454,6 +606,15 @@ it runs: the port's selection scores **higher** under divsel's own arithmetic.
 This is not covered by the tolerance rules either. The tolerances above bound
 the *value* of an agreed set; here the sets themselves differ, and
 `expected_selected` is an exact-equality field on purpose.
+
+**It reaches `threshold` too, and there it is subtler**, because `selected`,
+`stage`, `g`, `div` and `f` can all still agree: the reported `threshold` is a
+*selected grid entry*, and where two entries tie on `f` to within an ulp the two
+arithmetics can keep different ones — moving `threshold` by a whole grid gap
+while nothing else moves at all. That mode, why the 22 committed cases are
+immune to it, and the diagnostic a harness runs instead of arguing about it, are
+under
+[`expected_threshold` is a selected grid entry](#expected_threshold-is-a-selected-grid-entry-so-its-bound-is-not-a-tolerance).
 
 **What a port should do.**
 

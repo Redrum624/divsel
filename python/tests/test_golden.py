@@ -18,6 +18,20 @@ file with the same rules this test applies:
   absolute error stays at the ``ulp(1)`` scale. See "Why ``f``'s bound is
   derived instead of relative to ``f``" in ``docs/CONFORMANCE.md``.
 
+One caveat on that table, which the rules above do **not** encode because no
+tolerance can: ``expected_threshold`` under ``stage == "sweep"`` is a *selected
+grid entry*, not a measured quantity, so its error is quantized to a factor
+``1 + eps`` and its bound is never the thing that decides. What decides is
+rule 2's fold, and a tie there can in principle be broken differently by an f32
+kernel and a float64 port. It cannot be on these 22 -- that property is pinned
+by ``the_reported_threshold_is_never_decided_by_a_breakable_tie`` in
+``crates/divsel/tests/golden.rs``, on the Rust side only, because it needs
+``thresholds``/``greedy_independent_set``/``eval_g`` and the Python extension
+exports just ``gist_select`` and ``gist_select_full``. The two readers still
+apply the *same* conformance rules; the extra property test is not one of them.
+"`expected_threshold` is a selected grid entry" in ``docs/CONFORMANCE.md`` says
+what a port's own harness does about the mode off the 22.
+
 The generator is ``python/tools/gen_golden.py``; the Rust-side reader is
 ``crates/divsel/tests/golden.rs``.
 """

@@ -18,12 +18,22 @@
 //!   absolute error stays at the `ulp(1)` scale. See "Why `f`'s bound is
 //!   derived instead of relative to `f`" in docs/CONFORMANCE.md.
 //!
+//! One caveat on that table, which the rules above do **not** encode because no
+//! tolerance can: `expected_threshold` under `stage == "sweep"` is a *selected
+//! grid entry*, not a measured quantity, so its error is quantized to a factor
+//! `1 + eps` and its bound is never the thing that decides. What decides is
+//! rule 2's fold, and a tie there can in principle be broken differently by an
+//! f32 kernel and a float64 port. It cannot be on these 22 --
+//! [`the_reported_threshold_is_never_decided_by_a_breakable_tie`] proves that,
+//! and "`expected_threshold` is a selected grid entry" in docs/CONFORMANCE.md
+//! says what a port's own harness does about it off them.
+//!
 //! The generator is `python/tools/gen_golden.py`; the Python-side reader is
 //! `python/tests/test_golden.py`.
 
 use divsel::{
-    gist, Coverage, DiameterMode, FacilityLocation, GistConfig, Linear, Metric, Points, Stage,
-    Utility,
+    div, eval_g, gist, greedy_independent_set, thresholds, Coverage, DiameterMode,
+    FacilityLocation, GistConfig, Linear, Metric, Points, Stage, Utility,
 };
 use serde::Deserialize;
 
@@ -84,14 +94,15 @@ fn close(actual: f64, expected: f64, bound: f64) -> bool {
     (actual - expected).abs() <= bound
 }
 
-/// Runs one case and returns every conformance mismatch it produced -- empty
-/// when the case passes. A malformed fixture entry (unknown metric, missing
-/// utilities, an input the library rejects) still panics: that is a file
-/// error, not a conformance failure, and it stops the run.
-fn check_case(case: &Case, rel: f64) -> Vec<String> {
-    // `note` carries the case's one-line rationale; surface it on failure.
-    let ctx = format!("case {:?} — {}", case.name, case.note);
-
+/// Rebuilds one case's instance: the point set and a fresh utility for it.
+///
+/// Shared by [`check_case`] and
+/// [`the_reported_threshold_is_never_decided_by_a_breakable_tie`], which needs
+/// the same instance to re-run the sweep one threshold at a time. A malformed
+/// fixture entry (unknown metric, missing utilities, an input the library
+/// rejects) panics: that is a file error, not a conformance failure, and it
+/// stops the run.
+fn build_instance(case: &Case, ctx: &str) -> (Points<'static>, Box<dyn Utility>) {
     let dim = case.vectors[0].len();
     let flat: Vec<f32> = case.vectors.iter().flatten().copied().collect();
     let metric = match case.metric.as_str() {
@@ -101,7 +112,7 @@ fn check_case(case: &Case, rel: f64) -> Vec<String> {
     };
     let pts = Points::new(flat, dim, metric).unwrap_or_else(|e| panic!("{ctx}: {e}"));
 
-    let mut util: Box<dyn Utility> = match case.utility.as_str() {
+    let util: Box<dyn Utility> = match case.utility.as_str() {
         "linear" => match &case.utilities {
             None => Box::new(Linear::uniform(pts.n())),
             Some(value) => {
@@ -134,6 +145,15 @@ fn check_case(case: &Case, rel: f64) -> Vec<String> {
         }
         other => panic!("{ctx}: unknown utility {other:?}"),
     };
+    (pts, util)
+}
+
+/// Runs one case and returns every conformance mismatch it produced -- empty
+/// when the case passes.
+fn check_case(case: &Case, rel: f64) -> Vec<String> {
+    // `note` carries the case's one-line rationale; surface it on failure.
+    let ctx = format!("case {:?} — {}", case.name, case.note);
+    let (pts, mut util) = build_instance(case, &ctx);
 
     let diameter = match case.diameter.as_str() {
         "exact" => DiameterMode::Exact,
@@ -395,6 +415,107 @@ fn the_f_bound_carries_lam_times_the_div_budget() {
         tol(expected_g, REL) + 0.0 * tol(expected_div, REL),
         tol(expected_g, REL)
     );
+}
+
+/// No committed case reports a `threshold` that a last ulp could move.
+///
+/// `expected_threshold` under `stage == "sweep"` is not a measured quantity: it
+/// is the grid entry rule 2's non-strict fold kept, so its error is quantized —
+/// a port either picks the same entry (agreeing to the last ulp) or a
+/// neighbour, a factor `1 + eps` away and five orders outside the bound. Which
+/// entry the fold keeps is decided by `f`, and where two entries attain the
+/// **same** `f` with **different** selections, an ulp of difference between
+/// divsel's f32 kernel and a float64 port can break that tie the other way:
+/// `threshold` then moves a whole grid gap while `selected`, `stage`, `g`,
+/// `div` and `f` all still agree. That is a false failure, and no tolerance can
+/// cover it — see "`expected_threshold` is a selected grid entry, so its bound
+/// is not a tolerance" in docs/CONFORMANCE.md.
+///
+/// The contract's answer is that the 22 are immune, and this is what makes that
+/// true rather than hoped for: on 12 of the 14 geometric-grid sweep cases every
+/// entry tied at the best `f` yields the *same* selection, so the fold's answer
+/// is the largest of them whatever the arithmetic. The two exceptions tie
+/// *distinct* selections, and both are margin-exempt tie cases whose ties are
+/// **exact** dyadic arithmetic (1-D dyadic coordinates give dyadic distances),
+/// so no width can break them either.
+///
+/// A future fixture that introduced a breakable tie fails here rather than
+/// shipping a case whose `threshold` a correct port could legitimately miss.
+#[test]
+fn the_reported_threshold_is_never_decided_by_a_breakable_tie() {
+    let Some(text) = fixture_text() else {
+        println!("skipped: no fixture; see divsel_reproduces_the_golden_fixtures");
+        return;
+    };
+    let golden: Golden = serde_json::from_str(&text).expect("golden-selection.json parses");
+
+    /// The cases whose best-`f` tie spans distinct selections, with the reason
+    /// that is safe. Both are in the fixture's own margin-exempt set (see
+    /// "Robustness margin" in docs/CONFORMANCE.md): their ties are exact dyadic
+    /// arithmetic, built to pin the tie rules, and identical on every platform.
+    const EXACT_DYADIC_TIES: [&str; 2] = [
+        "weighted_line_middle_threshold",  // case 2, rule 2
+        "coverage_exact_tie_lowest_index", // case 18, rules 1 and 2
+    ];
+
+    let mut geometric_sweep_cases = 0;
+    let mut unique_selection = 0;
+    let mut exact_dyadic = 0;
+    for case in &golden.cases {
+        // Only the geometric grid under an exact diameter is reachable through
+        // the public API (`thresholds` carries the paper's `2/eps` ceiling), and
+        // only a `"sweep"` case reports a grid entry at all: `"greedy"` reports
+        // `0` and `"diameter_pair"` reports `d_max`, both measured quantities.
+        if case.expected_stage != "sweep" || case.exhaustive_thresholds || case.diameter != "exact"
+        {
+            continue;
+        }
+        geometric_sweep_cases += 1;
+        let ctx = format!("case {:?} — {}", case.name, case.note);
+        let (pts, mut util) = build_instance(case, &ctx);
+        let k = case.k.min(pts.n());
+        let d_max = pts.diameter().0;
+
+        // (f, selection) at every entry, folded exactly as the driver folds it.
+        let mut best_f = f64::NEG_INFINITY;
+        let mut tied: Vec<Vec<usize>> = Vec::new();
+        for d in thresholds(d_max, case.eps) {
+            let selection = greedy_independent_set(&pts, util.as_mut(), d, k);
+            let g_value = eval_g(util.as_mut(), &selection, &pts);
+            let f_value = if case.lam == 0.0 {
+                g_value
+            } else {
+                g_value + case.lam * f64::from(div(&pts, &selection))
+            };
+            if f_value > best_f {
+                best_f = f_value;
+                tied.clear();
+            }
+            if f_value == best_f {
+                tied.push(selection);
+            }
+        }
+        assert!(!tied.is_empty(), "{ctx}: the sweep produced no entry");
+
+        let distinct = tied.iter().any(|selection| selection != &tied[0]);
+        if distinct {
+            exact_dyadic += 1;
+            assert!(
+                EXACT_DYADIC_TIES.contains(&case.name.as_str()),
+                "{ctx}: entries with distinct selections tie at f = {best_f}, so the reported \
+                 threshold is decided by that tie -- a float64 port may legitimately keep a \
+                 different entry. Either the case is not safe to compare on `threshold`, or it \
+                 belongs in EXACT_DYADIC_TIES with the argument for why its tie is exact."
+            );
+        } else {
+            unique_selection += 1;
+        }
+    }
+
+    // The counts docs/CONFORMANCE.md quotes, pinned so the prose cannot drift.
+    assert_eq!(geometric_sweep_cases, 14);
+    assert_eq!(unique_selection, 12);
+    assert_eq!(exact_dyadic, 2);
 }
 
 /// `DIVSEL_REQUIRE_GOLDEN` is read the way CI sets it, and an unset or disabled

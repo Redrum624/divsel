@@ -23,8 +23,42 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     `tolerance` block still carries `f_rel` as its single knob. Both readers
     (`crates/divsel/tests/golden.rs`, `python/tests/test_golden.py`) implement
     the new rule and pin it with a regression test.
+  - **Corrected**, after an adversarial check of the above: the section claimed
+    the `f` check "adds a consistency check on the combination ... and every one
+    of those is gross, not marginal". Measured, the first half understates it
+    and the second half is false. The `f` check is frequently the **sole**
+    detector of a combination error (a doubled `lam` is caught on 20 of the 22
+    cases and on 16 of those by `f` alone) — but at the f32 noise floor, where
+    `lam * div` is a rounding-scale contribution, a wrong `lam` or a flipped
+    sign is **unobservable** rather than caught: on a verified exact-duplicate
+    cosine instance at `lam = 64` the derived bound accepts a sign flip at 11.6%
+    of budget where the old bound rejected it at 3.81x, and the whole contract
+    then passes. The section now states the escape band
+    (`div ∈ (1.6e-08, 5.2e-07)` at `lam = 64`, 21.7% of 60,000 exact-duplicate
+    draws), states that no committed fixture is anywhere near it, and argues
+    from unobservability — measured, the diversity term is at most `1.7e-05` of
+    `f` there and never changed `selected` or `stage` in 1,500 out-of-fixture
+    instances — instead of claiming a strength the `f` check does not have.
 
 ### Added
+
+- **`expected_threshold` is a selected grid entry** section in
+  `docs/CONFORMANCE.md`, addressing the same width sensitivity in the one field
+  the tolerance fix left on its old bound. Because `threshold` is a *choice*
+  among grid entries and not a measured quantity, its error is quantized to a
+  factor `1 + eps` (9.09% at the default `eps = 0.1`) — a correct float64 port
+  reproduces all 22 to within `3.35e-08` relative, 3.4% of the bound, while a
+  neighbouring entry is 90,909x the bound away — so no tolerance can separate a
+  false failure from a real one. The **rule is deliberately unchanged**: a port
+  sweeping the wrong grid is caught on 8 of the 22 through this field alone
+  (one entry too few: cases 1, 3, 4, 5, 7, 9, 10, 18), and both candidate
+  relaxations were rejected on measurement. The mode is documented instead, the
+  way Finding B is, with the provoking families and the diagnostic a harness
+  runs. New Rust test
+  `the_reported_threshold_is_never_decided_by_a_breakable_tie` proves the 22 are
+  immune: on 12 of the 14 geometric-grid sweep cases every entry tied at the
+  best `f` yields the same selection, and the other two (cases 2 and 18) tie by
+  exact dyadic arithmetic no width can break.
 
 - **Degenerate geometry** section in `docs/CONFORMANCE.md`: on exact duplicates,
   signed-axis vectors and antipodal pairs, divsel's f32 distance kernel is the
