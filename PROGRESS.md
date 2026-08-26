@@ -3,7 +3,7 @@
 Plan: `docs/superpowers/plans/2026-08-21-divsel-v0.1.md` · Execution: Subagent-Driven Development on branch `feat/v0.1`.
 
 CURRENT LOT: COMPLETE — awaiting the user's publish decisions
-NEXT ACTION: The plan is COMPLETE at 223982c and everything is green locally (cargo 117+5+3+3+4; pytest 153 / 225; golden byte-identical; clippy/fmt/rustdoc clean; cargo publish --dry-run passes). All remaining work is the USER's, in `docs/RELEASE.md`: merge to main, flip the repo public if desired, `cargo login` + publish, PyPI trusted publishing, tag v0.1.0. NOTE: GitHub Actions minutes appear exhausted on this private repo (runs fail in ~5 s with zero steps and no logs) — check billing before relying on the release workflow, which has never been triggered.
+NEXT ACTION: MERGED. `main` == `feat/v0.1` == c95a128, pushed. Everything green locally. Remaining work is the user's, in `docs/RELEASE.md` steps 2-7: flip the repo public (optional), `cargo login` + `cargo publish -p divsel`, configure PyPI trusted publishing, `git tag -a v0.1.0` + `git push --follow-tags` (that tag is what triggers release.yml and builds the wheels), then the GitHub Release. NOTE: GitHub Actions minutes appear exhausted on this private repo — runs fail in ~5 s with zero steps; release.yml has never been triggered, so check billing first.
 
 | Lot | Goal (one line) | Status | Commit SHA | Files touched | Next concrete action |
 |-----|-----------------|--------|-----------|---------------|----------------------|
