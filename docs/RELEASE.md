@@ -21,13 +21,15 @@ and `git push -u origin main`).
 > `--public` here is that flip. If you want a last look first, use `--private` and
 > run `gh repo edit Redrum624/divsel --visibility public --accept-visibility-change-consequences` when ready.
 >
-> On that private path, watch the **`simd parity (aarch64)`** job: it is the only
-> one in `ci.yml` that asks for a runner label whose availability depends on the
-> account (`runs-on: ubuntu-24.04-arm`, GitHub's hosted Linux arm64 image), and no
-> job in this repository has ever run — see `docs/benchmarks/README.md`. If that
-> job cannot start, check the account's runner entitlement before concluding the
-> workflow is broken; it is the sole gate for the aarch64 half of the R-G22
-> bit-identity promise, so dropping it silently would take that half with it.
+> Either path keeps the **`simd parity (aarch64)`** job, which is the only one in
+> `ci.yml` asking for a hosted arm64 runner (`runs-on: ubuntu-24.04-arm`) and the
+> sole gate for the aarch64 half of the R-G22 bit-identity promise. GitHub made
+> arm64 standard runners available in **private** repositories on 2026-01-29,
+> against the plan's free minute allocation
+> (<https://github.blog/changelog/2026-01-29-arm64-standard-runners-are-now-available-in-private-repositories/>,
+> checked 2026-08-25), so the private path does not drop it. What is still
+> unproven is everything else: no workflow in this repository has ever run
+> — see `docs/benchmarks/README.md`.
 
 ## 2. Publish the crate
 
