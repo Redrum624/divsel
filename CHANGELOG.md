@@ -5,6 +5,37 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Changed
+
+- **Conformance contract** (`docs/CONFORMANCE.md`), after an independent
+  90,000-instance differential against Aura's pure-Python port — a port written
+  from that document alone (2026-08-26, 0 algorithmic disagreements). No library
+  behaviour changed and `test-assets/golden-selection.json` is byte-identical;
+  what changed is the contract a port is held to.
+  - The float tolerance for `expected_f` is now **derived from the primitives**:
+    `tol(expected_g) + lam * tol(expected_div)` with
+    `tol(x) = f_rel * max(1, abs(x))`, instead of `tol(expected_f)`. `f` is
+    `g + lam * div`, so a distance ulp reaches `f` multiplied by `lam`; the old
+    rule failed a correct port at high `lam` (147 of the 90,000 instances). The
+    other float fields keep the unchanged `tol(expected)` rule and the
+    `tolerance` block still carries `f_rel` as its single knob. Both readers
+    (`crates/divsel/tests/golden.rs`, `python/tests/test_golden.py`) implement
+    the new rule and pin it with a regression test.
+
+### Added
+
+- **Degenerate geometry** section in `docs/CONFORMANCE.md`: on exact duplicates,
+  signed-axis vectors and antipodal pairs, divsel's f32 distance kernel is the
+  *less* accurate side, so a float64 port legitimately disagrees about
+  `selected` and `stage` there — with the measured rates, what is safe to
+  compare, and how to classify a difference. The optional bit-identity section
+  does not cover this and now says so.
+- **Independent verification** section in `docs/CONFORMANCE.md` and a matching
+  README design commitment, recording the differential's date, parameter ranges
+  and its qualifier.
+
 ## [0.1.0] - 2026-08-22
 
 First release.

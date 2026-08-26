@@ -7,6 +7,39 @@ instances proving the `(1/2 − ε)` and `(2/3 − ε)` guarantees. A port — A
 proves conformance against **`test-assets/golden-selection.json`** (schema 1),
 not against divsel's source.
 
+## Independent verification (2026-08-26)
+
+divsel's strongest independent check to date is a **90,000-instance
+differential** between divsel's Rust core and Aura's pure-Python port of GIST —
+a port written from **this document alone**, never from divsel's source.
+
+| | |
+|---|---|
+| instances | 90,000 random |
+| parameters | `n` 1–40, `dim` 2–48, `k` 1–14, `lam ∈ {0 … 64}`, `eps ∈ {0.01 … 1.0}`, six vector families, six weight families |
+| **algorithmic disagreements** | **0** |
+| raw `selected` differences | 1,164 |
+| of those, exact `f` ties (two sets, same `f`) | 1,032 |
+| of those, the amplification in [Degenerate geometry](#degenerate-geometry-divsels-f32-distances-are-not-the-exact-ones) | 132 |
+| largest distance disagreement it drew | `4.77e-07` — 4 ulp of `1.0`, 2 ulp of `2.0`, in f32 |
+
+Every one of the 1,164 differences was re-run by handing the port's Algorithm 1
+**divsel's own f32 distance matrix**; on 1,164 of 1,164 it then reproduced
+divsel's answer exactly, tie rules included. That is the claim, and it is
+narrower than "the two always agree": it says that where they differed on the
+instances drawn, the difference was the width of the distance arithmetic and not
+the algorithm.
+
+Two defects in **this document** came out of it, and both are fixed here:
+
+1. The float tolerance was stated on `f` rather than on the primitives `f` is
+   built from, so it was not `lam`-independent — 147 of the 90,000 instances
+   that otherwise agreed exceeded it purely because `lam` multiplied a distance
+   ulp. See [Tolerance rules](#tolerance-rules).
+2. Nothing warned a port author that divsel's f32 kernel is the *less* accurate
+   side on degenerate geometry, so a correct float64 port disagrees there. See
+   [Degenerate geometry](#degenerate-geometry-divsels-f32-distances-are-not-the-exact-ones).
+
 ## The procedure
 
 1. Load `test-assets/golden-selection.json`.
@@ -21,11 +54,110 @@ rounding to disagree about.
 
 ### Tolerance rules
 
+Write **`tol(x) = f_rel * max(1, abs(x))`**, with `f_rel = 1e-6` read from the
+file's `tolerance` block.
+
 | Field | Rule |
 |---|---|
 | `expected_selected` | **Exact** list equality, order included (selection order; ascending for a diameter pair). |
 | `expected_stage` | Exact string equality (`"greedy"` / `"diameter_pair"` / `"sweep"`). |
-| `expected_f`, `expected_g`, `expected_div`, `expected_threshold`, `expected_d_max` | `abs(actual − expected) <= f_rel * max(1, abs(expected))` with `f_rel = 1e-6`, read from the file's `tolerance` block. |
+| `expected_g`, `expected_div`, `expected_threshold`, `expected_d_max` | `abs(actual − expected) <= tol(expected)`. |
+| `expected_f` | `abs(actual − expected_f) <= tol(expected_g) + lam * tol(expected_div)`, with `lam` the case's own `lam` field. |
+
+The `tolerance` block itself is unchanged: `f_rel` is still the single knob, and
+the `lam`-weighting is derived per case from that case's own `lam`.
+
+#### Why `f`'s bound is derived instead of relative to `f`
+
+`f = g + lam * div`, so `f` is **not a primitive**. `g` and `div` are; `f` is
+the number they combine, and an error in `div` reaches `f` multiplied by `lam`
+— a caller's parameter this contract puts no ceiling on. A bound stated
+directly on `f` has to guess how much of `f` arrived through `lam`, and the
+previous rule (`tol(expected_f)`) guessed that the answer scales with
+`abs(f)`. That is right everywhere except one regime, and the regime is
+reachable: when `g` dominates `f` and `div` is small, `abs(f)` is small while
+`lam * (last ulp of div)` is not.
+
+Cosine distance is `clamp(1 − a·b, 0, 2)` (rule 14), and on near-duplicate rows
+that subtraction is a cancellation — the result is tiny but its **absolute**
+error stays at the `ulp(1) = 1.1920929e-7` scale. A worked case, dyadic and
+reproducible:
+
+```
+vectors = [[-0.140625, -0.921875, -0.609375],
+           [-0.15625,  -0.9375,   -0.609375]]     # -9/64,-59/64,-39/64 and -10/64,-60/64,-39/64
+metric = "cosine", utility = "linear", utilities = null, k = 2, lam = 64.0, eps = 0.1
+
+divsel (f32 kernel)   selected [0, 1], stage "sweep",
+                      g = 2.0, div = 1.0418891906738281e-4, f = 2.0066680908203125
+a float64 port        same selection, same stage,
+                      div = 1.0442041095148902e-4, f = 2.0066829063008953
+
+distance gap  2.31e-07   (~2 ulp at magnitude 1 — the cancellation scale)
+f gap         1.48e-05   = lam * distance gap
+old bound     tol(f)                        = 2.007e-06   -> REJECTED (7.4x over)
+new bound     tol(g) + lam * tol(div)       = 6.600e-05   -> accepted (22% of budget)
+```
+
+A port that is *more* accurate than divsel here is failed by the old rule. That
+is a defect in the contract, not in the port. The derived bound propagates each
+primitive's own budget instead of guessing: `div`'s budget multiplied by the
+same `lam` the objective multiplies it by, plus `g`'s budget.
+
+Two properties worth stating explicitly:
+
+* `tol(div)` keeps the `max(1, ·)` **absolute floor** of `1e-6`, and the floor
+  — not the relative half — is what carries this case: a cosine distance near
+  zero has no relative accuracy left, but its absolute error is bounded by a few
+  `ulp(1)`. Measured here over 40,000 random instances (six vector families,
+  both metrics, `n <= 40`, `dim <= 48`, `lam` up to 64), the largest `div` error
+  a float64 recomputation produced against divsel used **23.7%** of `tol(div)`
+  and the largest `d_max` error used **24.1%**.
+* At `lam == 0` the bound collapses to `tol(expected_g)`, which is exactly
+  right: rule 18 makes `f` equal `g` there, `div` included when `div` is `+inf`.
+
+#### It does not loosen the committed contract, and it cannot accept a wrong answer
+
+On the 22 cases the derived bound is **identical** to the old one on 17 of them
+and never more than **1.17x** larger (case 21, `lam = 1`, `div = 0`); the
+largest bound anywhere in the file is `1.906e-05` (case 5).
+
+The separation between "ulp noise" and "detectable error" is three orders of
+magnitude, measured rather than asserted:
+
+| | measured |
+|---|---|
+| noise ceiling — largest share of the new `f` budget used by a genuine f32-vs-float64 difference, over 40,000 instances (`lam` up to 64, both metrics, six vector families, linear and facility-location `g`) | **0.21** of the budget; **0** exceedances. The old rule was exceeded **69** times, by up to **8.1x**. |
+| detection floor — distance from `expected_f` to the nearest *different* `f` value attainable by any subset of size `<= k`, over the 22 cases | **>= 631x** the new bound (case 16, the tightest; the median case is ~1e5x) |
+| the generator's own robustness margin (`MARGIN = 1e-4` relative, `python/tools/gen_golden.py`) | the new bound consumes at most **1.17%** of it, on every one of the 22 cases |
+| smallest discrete step the objective can take — `1` for coverage and uniform linear, `1/64` for the dyadic-weight linear cases | **>= 819x** the largest bound in the file |
+
+So an error big enough to be a bug — a broken tie-break, a strict `>` where the
+fold is `>=`, the wrong FacilityLocation scale — moves `f` by at least ~600
+times what the rule tolerates. Perturbing every `expected_f` by `1e-4` relative
+(the generator's margin floor) or by the case's smallest possible `Δg` is
+rejected on all 22 cases.
+
+**The derived bound is never the sole detector, which is why widening it is
+cheap.** `expected_g` and `expected_div` keep their own, unchanged, tight
+bounds and are checked on every case. A port whose `g` is wrong fails on `g`;
+a port whose `div` is wrong fails on `div`; neither outcome depends on what the
+`f` check does. What the `f` check adds is a consistency check on the
+*combination* — the wrong `lam`, the wrong sign, `0 * inf` producing `NaN`
+(rule 18) — and every one of those is gross, not marginal. Nor does the
+tolerance gate `expected_selected` or `expected_stage`: those are exact-equality
+fields, and a wrong answer that happens to tie on `f` — which is what the five
+margin-exempt cases are built from — is caught there.
+
+That matters most in the regime the fix exists for. At `lam = 64` with a
+near-zero `div`, the bound is `~6.6e-05` while a `1e-4`-relative change in `f`
+is `~2.0e-04`: about **3x** of headroom on that yardstick, not the 85x the 22
+committed cases enjoy (they run at `lam <= 4`). Stated honestly, the yardstick
+is the weak part there, not the bound: with `f` dominated by `g`, a `1e-4`
+*relative* change in `f` is a `1e-4` relative change in `g`, and `g`'s own
+`1e-6` bound catches that a hundred times sooner. Against the yardstick that
+actually applies to a wrong *answer* — the smallest discrete step the objective
+can take, `1/64` for dyadic weights — the headroom at `lam = 64` is **237x**.
 
 What each field *means* is fixed by the contract below: `expected_f`,
 `expected_g`, `expected_div` are `f(S)`, `g(S)` and `div(S)` of the reported
@@ -40,14 +172,20 @@ Every case must pass. The only optional case is listed under
 
 ```ts
 const g = JSON.parse(readFileSync("test-assets/golden-selection.json", "utf8"));
-const ok = (a: number, e: number) => Math.abs(a - e) <= g.tolerance.f_rel * Math.max(1, Math.abs(e));
+const tol = (x: number) => g.tolerance.f_rel * Math.max(1, Math.abs(x));
 for (const c of g.cases) {
   const r = gistSelect(c.vectors, c.utilities, c); // k, lam, eps, metric, utility, ...
   assert.deepEqual(r.selected, c.expected_selected);
   assert.equal(r.stage, c.expected_stage);
-  for (const [a, e] of [[r.f, c.expected_f], [r.g, c.expected_g], [r.div, c.expected_div],
-                        [r.threshold, c.expected_threshold], [r.dMax, c.expected_d_max]])
-    assert.ok(ok(a, e));
+  // `f` is derived from `g` and `div`, so its bound is too: lam multiplies div's.
+  const bounds: [number, number, number][] = [
+    [r.f,         c.expected_f,         tol(c.expected_g) + c.lam * tol(c.expected_div)],
+    [r.g,         c.expected_g,         tol(c.expected_g)],
+    [r.div,       c.expected_div,       tol(c.expected_div)],
+    [r.threshold, c.expected_threshold, tol(c.expected_threshold)],
+    [r.dMax,      c.expected_d_max,     tol(c.expected_d_max)],
+  ];
+  for (const [a, e, bound] of bounds) assert.ok(Math.abs(a - e) <= bound);
 }
 ```
 
@@ -270,7 +408,76 @@ elements folded into accumulator `idx % 16`, final reduction in fixed index
 order — which makes its results bit-identical across x86_64 and aarch64. A
 port that wants bit-identity with divsel must reproduce that exact
 accumulation order. **Conformance does not require it**: the `1e-6` relative
-tolerance absorbs any reasonable summation order.
+tolerance absorbs any reasonable summation order. That paragraph is about
+divsel's *own* kernels agreeing with each other on the same f32 arithmetic. It
+is **not** the answer to the next section, which is about a port whose
+arithmetic is a different *width*.
+
+### Degenerate geometry: divsel's f32 distances are not the exact ones
+
+Every distance divsel computes is `f32`, by contract (`crates/divsel/src/metric.rs`
+explains why: it is what makes the SIMD and scalar kernels bit-identical, and it
+is what the golden values were generated from). On most inputs that is invisible
+to a port. On **degenerate geometry it is not**, and the direction is the one a
+port author does not expect:
+
+> **divsel is the less accurate side.** A port computing distances in float64 is
+> *more* accurate, and will legitimately disagree with divsel about `selected`
+> and `stage` on these inputs.
+
+Three families provoke it, all of them geometry whose exact distances are
+integers:
+
+| family | exact distance | divsel's f32 kernel returns |
+|---|---|---|
+| exact duplicates (`dist == 0`) | `0` | up to `2.384185791015625e-07` |
+| exactly-antipodal unit vectors (`dist == 2`) | `2` | `1.9999998807907104`, sometimes `1.999999761581421` |
+| signed-axis vectors (`dist ∈ {0, 1, 2}`) | `0` / `1` / `2` | the same last-ulp drift on the `0` and `2` ends |
+
+Measured here, over 30,000 instances across six vector families and both
+metrics, the largest gap between divsel's `d_max` and a float64 recomputation
+was `1.906e-06` on euclidean (a relative `5.8e-08`) and `2.409e-07` on cosine;
+the independent differential above saw `4.77e-07` as the maximum in its own
+draw — 4 ulp of `1.0`, 2 ulp of `2.0`, in f32.
+
+**Why a last ulp becomes a different answer.** Line 3's diameter and line 4's
+candidate test are *discrete argmaxes* over those distances, resolved by the
+total orders in rules 9 and 15. Degenerate geometry makes distances tie
+**exactly**, so the tie-break is decided by whichever value the last ulp made
+larger — and divsel's f32 kernel and a float64 port disagree about that. The
+argmax then amplifies a `6e-08` relative distance difference into a different
+pair, a different `selected`, and an `f` that differs by percent. One measured
+instance (`n = 27`, `dim = 4`, `k = 4`, `lam = 8.0`, `eps = 0.75`): `f = 21.4375`
+from divsel against `21.0076` from the float64 port — a 2% gap. Note which way
+it runs: the port's selection scores **higher** under divsel's own arithmetic.
+
+This is not covered by the tolerance rules either. The tolerances above bound
+the *value* of an agreed set; here the sets themselves differ, and
+`expected_selected` is an exact-equality field on purpose.
+
+**What a port should do.**
+
+* **Safe to compare on anything:** the 22 committed cases. None of them contains
+  degenerate geometry, and the robustness margin (below) keeps every one of them
+  at least `6.3e-04` relative away from its nearest competitor — four orders of
+  magnitude above the last ulp. Passing all 22 is still the conformance bar and
+  nothing here relaxes it.
+* **Not a bug signal on its own:** a `selected` or `stage` difference on an
+  instance containing exact duplicates, signed-axis vectors, or antipodal pairs.
+  A generator drawing only uniform random dyadic coordinates never produces
+  those families, which is why divsel's fixtures and Aura's committed
+  400-instance test have never seen one. A harness whose generator *does* include
+  them will: measured at roughly **2% of instances on a degenerate mix** against
+  **1 in 30,000 on a realistic one**.
+* **How to classify a difference** rather than argue about it: re-run your own
+  Algorithm 1 on **divsel's** f32 distance matrix. If it then reproduces
+  divsel's `selected` and `stage`, the two implementations are the same
+  algorithm and the difference was arithmetic width. That is exactly the method
+  the differential above used, on all 1,164 of its differences.
+* **To agree with divsel on degenerate geometry at all**, a port must reproduce
+  divsel's f32 kernel — the 16-accumulator layout in the section above. That is
+  what the optional bit-identity section is for; it is optional precisely because
+  conformance is judged on the 22 cases, where it is not needed.
 
 ## What each case pins
 
@@ -352,3 +559,9 @@ rules 1 and 2) and case 22 (`f({0,3}) == f({1,3})`, rule 9's tie order). Case
 between thresholds producing the same subset, not between distinct subsets,
 and it passes the margin at `1.67e-1`. Each case's `note` states its margin or
 its exemption.
+
+That margin covers **these 22 instances**. It says nothing about instances a
+port's own harness generates: an instance drawn from the degenerate families
+*is* a knife edge, by construction, and the section on
+[Degenerate geometry](#degenerate-geometry-divsels-f32-distances-are-not-the-exact-ones)
+says what to do about it.

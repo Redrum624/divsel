@@ -6,9 +6,17 @@
 //! same file with the same rules this test applies:
 //!
 //! * `expected_selected` matches EXACTLY (list equality, order included);
-//! * every float field agrees within `f_rel * max(1, |expected|)`, with
-//!   `f_rel` read from the file's own `tolerance` block;
-//! * `expected_stage` matches exactly.
+//! * `expected_stage` matches exactly;
+//! * `expected_g`, `expected_div`, `expected_threshold` and `expected_d_max`
+//!   agree within `tol(expected) = f_rel * max(1, |expected|)`, with `f_rel`
+//!   read from the file's own `tolerance` block;
+//! * `expected_f` agrees within `tol(expected_g) + lam * tol(expected_div)`.
+//!   `f = g + lam * div` is derived, not primitive, so its bound is derived
+//!   too: an error in `div` reaches `f` multiplied by `lam`, which a bound
+//!   relative to `|f|` misses whenever `g` dominates `f` while `div` is small
+//!   -- the near-duplicate cosine regime, where `1 - a.b` cancels and the
+//!   absolute error stays at the `ulp(1)` scale. See "Why `f`'s bound is
+//!   derived instead of relative to `f`" in docs/CONFORMANCE.md.
 //!
 //! The generator is `python/tools/gen_golden.py`; the Python-side reader is
 //! `python/tests/test_golden.py`.
@@ -60,9 +68,20 @@ struct Case {
     expected_d_max: f64,
 }
 
-/// The conformance float rule: `|actual - expected| <= rel * max(1, |expected|)`.
-fn close(actual: f64, expected: f64, rel: f64) -> bool {
-    (actual - expected).abs() <= rel * expected.abs().max(1.0)
+/// The per-field tolerance budget: `tol(x) = f_rel * max(1, |x|)`.
+///
+/// The `max(1, .)` floor is the load-bearing half for a distance: a cosine
+/// distance near zero has no relative accuracy left -- it is `1 - a.b`, a
+/// cancellation -- but its absolute error stays bounded by a few `ulp(1)`.
+fn tol(expected: f64, rel: f64) -> f64 {
+    rel * expected.abs().max(1.0)
+}
+
+/// The conformance float rule: `|actual - expected| <= bound`, where `bound` is
+/// [`tol`] of the field itself for every primitive field, and
+/// `tol(g) + lam * tol(div)` for the derived `f`.
+fn close(actual: f64, expected: f64, bound: f64) -> bool {
+    (actual - expected).abs() <= bound
 }
 
 /// Runs one case and returns every conformance mismatch it produced -- empty
@@ -151,22 +170,48 @@ fn check_case(case: &Case, rel: f64) -> Vec<String> {
             case.expected_stage
         ));
     }
+    // `f` is derived from `g` and `div` (`f = g + lam * div`), so its budget is
+    // the sum of theirs with `lam` applied to `div`'s -- the same `lam` the
+    // objective applies. At `lam == 0` it collapses to `tol(g)`, which is what
+    // rule 18 promises: `f == g` exactly, even for an infinite `div`.
     let floats = [
-        ("f_value", out.f_value, case.expected_f),
-        ("g_value", out.g_value, case.expected_g),
-        ("div", f64::from(out.div), case.expected_div),
+        (
+            "f_value",
+            out.f_value,
+            case.expected_f,
+            tol(case.expected_g, rel) + case.lam * tol(case.expected_div, rel),
+        ),
+        (
+            "g_value",
+            out.g_value,
+            case.expected_g,
+            tol(case.expected_g, rel),
+        ),
+        (
+            "div",
+            f64::from(out.div),
+            case.expected_div,
+            tol(case.expected_div, rel),
+        ),
         (
             "threshold",
             f64::from(out.threshold),
             case.expected_threshold,
+            tol(case.expected_threshold, rel),
         ),
-        ("d_max", f64::from(out.d_max), case.expected_d_max),
+        (
+            "d_max",
+            f64::from(out.d_max),
+            case.expected_d_max,
+            tol(case.expected_d_max, rel),
+        ),
     ];
-    for (field, actual, expected) in floats {
-        if !close(actual, expected, rel) {
+    for (field, actual, expected, bound) in floats {
+        if !close(actual, expected, bound) {
             problems.push(format!(
                 "{field} = {actual} differs from expected {expected} \
-                 beyond {rel} * max(1, |expected|)"
+                 by {} beyond the conformance bound {bound}",
+                (actual - expected).abs()
             ));
         }
     }
@@ -299,6 +344,56 @@ fn divsel_reproduces_the_golden_fixtures() {
         failures.len(),
         golden.cases.len(),
         failures.join("\n")
+    );
+}
+
+/// The `f` bound carries `lam` times `div`'s budget, and that is load-bearing.
+///
+/// This pins the fix for the tolerance defect the 2026-08-26 differential found:
+/// `f = g + lam * div`, so an error in `div` reaches `f` multiplied by `lam`,
+/// and a bound relative to `|f|` misses it whenever `g` dominates `f` while
+/// `div` is small. The numbers are the worked case in docs/CONFORMANCE.md --
+/// two near-duplicate cosine rows at `lam = 64`, where `1 - a.b` cancels and
+/// the f32 distance carries an absolute error at the `ulp(1)` scale.
+#[test]
+fn the_f_bound_carries_lam_times_the_div_budget() {
+    const REL: f64 = 1e-6;
+    let lam = 64.0;
+    // What divsel reports (f32 distance kernel).
+    let expected_f = 2.0066680908203125;
+    let expected_g = 2.0;
+    let expected_div = 1.0418891906738281e-4;
+    // What a float64 port reports for the SAME selection and stage: the same
+    // algorithm, a wider distance arithmetic -- and the more accurate side.
+    let port_f = 2.0066829063008953;
+
+    // The old, lam-independent rule rejected it. That was the contract defect:
+    // it failed a correct port at high lam.
+    assert!(
+        !close(port_f, expected_f, tol(expected_f, REL)),
+        "the old rule was supposed to reject this case"
+    );
+
+    // The derived rule accepts it, and uses under a quarter of the budget.
+    let bound = tol(expected_g, REL) + lam * tol(expected_div, REL);
+    assert!(close(port_f, expected_f, bound));
+    assert!((port_f - expected_f).abs() < 0.25 * bound);
+
+    // It still rejects an error a real bug would produce. The smallest discrete
+    // step this fixture family's objective can take is 1/64 (dyadic weights),
+    // 237x the bound; the generator's own robustness margin (1e-4 relative) is
+    // 3x it even in this worst regime.
+    assert!(!close(expected_f + 1.0 / 64.0, expected_f, bound));
+    assert!(!close(
+        expected_f + 1e-4 * expected_f.abs().max(1.0),
+        expected_f,
+        bound
+    ));
+
+    // At lam == 0 the bound is exactly g's: rule 18 makes `f` equal `g` there.
+    assert_eq!(
+        tol(expected_g, REL) + 0.0 * tol(expected_div, REL),
+        tol(expected_g, REL)
     );
 }
 

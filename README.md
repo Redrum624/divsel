@@ -70,6 +70,7 @@ So `divsel` aims at three things nobody currently offers together: **a real lice
 - **Proven, not asserted.** A brute-force oracle enumerates `OPT` on small instances and asserts the approximation ratio actually holds — the test no incumbent ships.
 - **Installs everywhere.** abi3 wheels for Python 3.11 → 3.14, Linux · macOS · **Windows**, x86_64 and aarch64.
 - **Reference implementation.** Exports `golden-selection.json`; the ports in [Aura](https://github.com/Redrum624/Aura) (Python) and `limbic` (TypeScript) conform to it.
+- **Checked against an independent rewrite.** A 90,000-instance differential (2026-08-26) between the Rust core and Aura's pure-Python port — written from [`docs/CONFORMANCE.md`](https://github.com/Redrum624/divsel/blob/main/docs/CONFORMANCE.md) alone, never from this source — found **zero algorithmic disagreements**: all 1,164 differing selections reproduced divsel's answer once the port was fed divsel's own f32 distance matrix. Not a claim that the two always agree — a claim that where they differ, it is the width of the distance arithmetic. Details, parameter ranges and the two contract defects it exposed: [Independent verification](https://github.com/Redrum624/divsel/blob/main/docs/CONFORMANCE.md#independent-verification-2026-08-26).
 - **Apache-2.0.**
 
 ## Drop-in for MMR

@@ -6,9 +6,17 @@ Aura (Python) and limbic (TypeScript) ports prove conformance against the same
 file with the same rules this test applies:
 
 * ``expected_selected`` matches EXACTLY (list equality, order included);
-* every float field agrees within ``f_rel * max(1, |expected|)``, with
-  ``f_rel`` read from the file's own ``tolerance`` block;
-* ``expected_stage`` matches exactly.
+* ``expected_stage`` matches exactly;
+* ``expected_g``, ``expected_div``, ``expected_threshold`` and
+  ``expected_d_max`` agree within ``tol(expected) = f_rel * max(1, |expected|)``,
+  with ``f_rel`` read from the file's own ``tolerance`` block;
+* ``expected_f`` agrees within ``tol(expected_g) + lam * tol(expected_div)``.
+  ``f = g + lam * div`` is derived, not primitive, so its bound is derived too:
+  an error in ``div`` reaches ``f`` multiplied by ``lam``, which a bound
+  relative to ``|f|`` misses whenever ``g`` dominates ``f`` while ``div`` is
+  small -- the near-duplicate cosine regime, where ``1 - a.b`` cancels and the
+  absolute error stays at the ``ulp(1)`` scale. See "Why ``f``'s bound is
+  derived instead of relative to ``f``" in ``docs/CONFORMANCE.md``.
 
 The generator is ``python/tools/gen_golden.py``; the Rust-side reader is
 ``crates/divsel/tests/golden.rs``.
@@ -105,9 +113,66 @@ needs_the_fixture = pytest.mark.skipif(
 )
 
 
-def _close(actual: float, expected: float) -> bool:
-    """The conformance float rule: |actual - expected| <= f_rel * max(1, |expected|)."""
-    return abs(actual - expected) <= F_REL * max(1.0, abs(expected))
+def _tol(expected: float) -> float:
+    """The per-field tolerance budget: ``tol(x) = f_rel * max(1, |x|)``.
+
+    The ``max(1, .)`` floor is the load-bearing half for a distance: a cosine
+    distance near zero has no relative accuracy left -- it is ``1 - a.b``, a
+    cancellation -- but its absolute error stays bounded by a few ``ulp(1)``.
+    """
+    return F_REL * max(1.0, abs(expected))
+
+
+def _close(actual: float, expected: float, bound: float) -> bool:
+    """The conformance float rule: |actual - expected| <= bound.
+
+    ``bound`` is ``_tol`` of the field itself for every primitive field, and
+    ``_tol(g) + lam * _tol(div)`` for the derived ``f``.
+    """
+    return abs(actual - expected) <= bound
+
+
+@needs_the_fixture
+def test_the_f_bound_carries_lam_times_the_div_budget() -> None:
+    """The ``f`` bound carries ``lam`` times ``div``'s budget, and that is load-bearing.
+
+    This pins the fix for the tolerance defect the 2026-08-26 differential
+    found: ``f = g + lam * div``, so an error in ``div`` reaches ``f``
+    multiplied by ``lam``, and a bound relative to ``|f|`` misses it whenever
+    ``g`` dominates ``f`` while ``div`` is small. The numbers are the worked
+    case in ``docs/CONFORMANCE.md`` -- two near-duplicate cosine rows at
+    ``lam = 64``, where ``1 - a.b`` cancels and the f32 distance carries an
+    absolute error at the ``ulp(1)`` scale. Twin of
+    ``the_f_bound_carries_lam_times_the_div_budget`` in
+    ``crates/divsel/tests/golden.rs``; the two readers must agree.
+    """
+    lam = 64.0
+    # What divsel reports (f32 distance kernel).
+    expected_f = 2.0066680908203125
+    expected_g = 2.0
+    expected_div = 1.0418891906738281e-4
+    # What a float64 port reports for the SAME selection and stage: the same
+    # algorithm, a wider distance arithmetic -- and the more accurate side.
+    port_f = 2.0066829063008953
+
+    # The old, lam-independent rule rejected it. That was the contract defect:
+    # it failed a correct port at high lam.
+    assert not _close(port_f, expected_f, _tol(expected_f))
+
+    # The derived rule accepts it, and uses under a quarter of the budget.
+    bound = _tol(expected_g) + lam * _tol(expected_div)
+    assert _close(port_f, expected_f, bound)
+    assert abs(port_f - expected_f) < 0.25 * bound
+
+    # It still rejects an error a real bug would produce. The smallest discrete
+    # step this fixture family's objective can take is 1/64 (dyadic weights),
+    # 237x the bound; the generator's own robustness margin (1e-4 relative) is
+    # 3x it even in this worst regime.
+    assert not _close(expected_f + 1.0 / 64.0, expected_f, bound)
+    assert not _close(expected_f + 1e-4 * max(1.0, abs(expected_f)), expected_f, bound)
+
+    # At lam == 0 the bound is exactly g's: rule 18 makes `f` equal `g` there.
+    assert _tol(expected_g) + 0.0 * _tol(expected_div) == _tol(expected_g)
 
 
 def test_the_require_golden_override_is_read_the_way_ci_sets_it() -> None:
@@ -208,14 +273,19 @@ def test_golden_case(case: dict) -> None:
     ctx = f"case {case['name']!r} — {case['note']}"
     assert out["selected"] == case["expected_selected"], f"{ctx}: selected differs"
     assert out["stage"] == case["expected_stage"], f"{ctx}: stage differs"
-    for field, expected in (
-        ("f_value", case["expected_f"]),
-        ("g_value", case["expected_g"]),
-        ("div", case["expected_div"]),
-        ("threshold", case["expected_threshold"]),
-        ("d_max", case["expected_d_max"]),
+    # `f` is derived from `g` and `div` (`f = g + lam * div`), so its budget is
+    # the sum of theirs with `lam` applied to `div`'s -- the same `lam` the
+    # objective applies. At `lam == 0` it collapses to `_tol(g)`, which is what
+    # rule 18 promises: `f == g` exactly, even for an infinite `div`.
+    for field, expected, bound in (
+        ("f_value", case["expected_f"],
+         _tol(case["expected_g"]) + case["lam"] * _tol(case["expected_div"])),
+        ("g_value", case["expected_g"], _tol(case["expected_g"])),
+        ("div", case["expected_div"], _tol(case["expected_div"])),
+        ("threshold", case["expected_threshold"], _tol(case["expected_threshold"])),
+        ("d_max", case["expected_d_max"], _tol(case["expected_d_max"])),
     ):
-        assert _close(out[field], expected), (
+        assert _close(out[field], expected, bound), (
             f"{ctx}: {field} = {out[field]!r} differs from expected {expected!r} "
-            f"beyond {F_REL} * max(1, |expected|)"
+            f"by {abs(out[field] - expected)!r}, beyond the conformance bound {bound!r}"
         )
