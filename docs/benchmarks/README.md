@@ -9,7 +9,8 @@ Two things are measured:
 
 1. **Installability** of divsel and the three incumbents on Windows x64 for CPython 3.11, 3.12, 3.13 and
    3.14 (16 cells, measured here), plus a workflow that measures the same 4 libraries on Linux and macOS
-   (`.github/workflows/install-matrix.yml`, not run yet -- this repository has not been pushed to CI).
+   (`.github/workflows/install-matrix.yml`, which **has** run -- five times, all green, most recently
+   run 32901377367 on 2026-08-25; results below).
 2. **Wall-clock, peak RSS and achieved `f(S)`** of divsel against PyPI `gist-select`, git `gist-sampling`
    and a naive numpy MMR baseline on identical inputs, scored by one shared evaluator.
 
@@ -97,8 +98,22 @@ with pip's output tail; the `assemble` job merges them into `docs/benchmarks/ins
 the table into the job summary (`.github/scripts/assemble_matrix.py`). The divsel cell is `pip install .`
 on the checkout, so it needs the Rust toolchain the workflow installs with `dtolnay/rust-toolchain@stable`.
 The YAML was checked with `python -c "import yaml; yaml.safe_load(open('.github/workflows/install-matrix.yml'))"`
-and the cell script + assembler were exercised locally on two real cells (see the pip cross-check above);
-the workflow itself has not run, so those 32 cells are **not measured**.
+and the cell script + assembler were exercised locally on two real cells (see the pip cross-check above).
+
+The workflow has since run on CI: five runs, all green, the latest being run 32901377367 (2026-08-25,
+branch `feat/v0.1`, tree f7027c8), whose `install-matrix` artifact holds 48 records -- 4 libraries x 3
+OSes x CPython 3.11-3.14. Read from that artifact:
+
+| library | Linux | Windows | macOS |
+|---|---|---|---|
+| divsel | 4/4 ok | 4/4 ok | 4/4 ok |
+| gist-select | 4/4 ok | 4/4 ok | 4/4 ok |
+| gist-sampling | 4/4 ok | 4/4 ok | 4/4 ok |
+| submodlib-py | 2/4 ok | 0/4 ok | 2/4 ok |
+
+The per-cell pip output lives in the run's job summary and its `install-cell-*` artifacts; it is not
+transcribed here. Note the tree measured is 18 commits behind this one, and no run has covered the
+current `.github/` (see `docs/RELEASE.md`).
 
 ## Comparison against the incumbents
 

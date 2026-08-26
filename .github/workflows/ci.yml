@@ -40,9 +40,12 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          out=$(cargo test -p divsel --benches --all-features 2>&1)
-          echo "$out"
-          grep -q 'is a benchmark, not a test' <<<"$out"
+          # `out=$(cmd)` then `echo "$out"` prints the output when the command
+          # SUCCEEDED and discards it when it failed -- `set -e` exits at the
+          # assignment. A gate needs the opposite, so the output is streamed
+          # through `tee` and `pipefail` still turns a non-zero cargo red.
+          cargo test -p divsel --benches --all-features 2>&1 | tee "$RUNNER_TEMP/bench-gate.log"
+          grep -q 'is a benchmark, not a test' "$RUNNER_TEMP/bench-gate.log"
       # docs/RELEASE.md lists this among the pre-tag gates, so it runs here too:
       # a broken intra-doc link or a bare URL regresses silently otherwise.
       - name: cargo doc (warnings are errors)
@@ -58,8 +61,15 @@ jobs:
       # user-facing "needs a Rust toolchain, 1.83+" claim is about `pip install .`
       # -- which builds divsel-py, not divsel. Both are checked. Check only:
       # criterion (dev-dependency, benches) needs 1.86, so `cargo test` cannot run
-      # on 1.83. divsel-py's pyo3 build script needs an interpreter, hence
-      # setup-python.
+      # on 1.83.
+      #
+      # setup-python does NOT supply the only interpreter pyo3's build script can
+      # find: `cargo clippy --all-targets` and `cargo test --workspace` above
+      # already build divsel-py, and this job ran green with no setup-python step
+      # in it at all (run 32901377186, 2026-08-25, on the tree at f7027c8), so
+      # ubuntu-latest's own python is discoverable. What it does is pin *which*
+      # interpreter the MSRV check builds against, so the gate does not move with
+      # the runner image.
       - uses: actions/setup-python@v6
         with:
           python-version: "3.12"
@@ -114,9 +124,10 @@ jobs:
           # ISA is there (NEON is architectural on aarch64, so that is here),
           # and `--nocapture` prints the ISA it selected so the log says which
           # one ran.
-          out=$(cargo test -p divsel --lib metric:: -- --nocapture 2>&1)
-          echo "$out"
-          grep -q 'the_dispatched_kernels_are_bit_identical_to_the_scalar_ones \.\.\. ok' <<<"$out"
+          # Streamed, not captured: `out=$(...)` under `set -e` would print the
+          # log only when the command succeeded and swallow it when it failed.
+          cargo test -p divsel --lib metric:: -- --nocapture 2>&1 | tee "$RUNNER_TEMP/metric-parity.log"
+          grep -q 'the_dispatched_kernels_are_bit_identical_to_the_scalar_ones \.\.\. ok' "$RUNNER_TEMP/metric-parity.log"
 
   python:
     name: python ${{ matrix.python }} / ${{ matrix.os }}${{ matrix.extras && ' + adapters' || '' }}

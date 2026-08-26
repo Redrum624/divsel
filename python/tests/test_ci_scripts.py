@@ -11,7 +11,10 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import os
 import re
+import shutil
+import subprocess
 import sys
 from pathlib import Path
 
@@ -143,9 +146,50 @@ KNOWN_RUNNER_LABELS = {
     "windows-11-arm",
     "macos-latest",
     "macos-15",
+    # Intel macOS is its own label since macOS 15; release.yml's x86_64 wheel
+    # job names it. Checked against
+    # https://docs.github.com/en/actions/reference/runners/github-hosted-runners
+    # on 2026-08-25.
+    "macos-15-intel",
     "macos-14",
     "macos-13",
 }
+
+
+def _runner_labels(runs_on, matrix):
+    r"""Every literal label ``runs-on`` can expand to, or ``None`` if unreadable.
+
+    ``runs-on`` is either a literal label or an expression naming a matrix key --
+    possibly a **dotted** one, ``${{ matrix.platform.runner }}``, which is what
+    ``maturin generate-ci`` writes and what the previous regex
+    (``matrix\.([A-Za-z_][A-Za-z0-9_-]*)\s*\}\}``) could not match. It found no
+    keys, and the literal branch was then skipped because ``"${{" in runs_on``,
+    so release.yml's ``linux``, ``windows`` and ``macos`` jobs -- the entire
+    wheel build and publish, the one workflow whose failure loses the release --
+    got no runner check of any kind.
+    """
+    text = str(runs_on)
+    paths = re.findall(r"\$\{\{\s*matrix\.([A-Za-z_][A-Za-z0-9_.-]*?)\s*\}\}", text)
+    if not paths:
+        return None if "${{" in text else [text]
+    labels = []
+    for path in paths:
+        key, *rest = path.split(".")
+        assert key in matrix, (
+            f"runs-on uses matrix.{path}, whose key {key!r} the job does not "
+            f"declare (declared: {sorted(matrix)})"
+        )
+        declared = matrix[key]
+        rows = list(declared) if isinstance(declared, list) else [declared]
+        # `include` rows can add more values for the same key.
+        rows += [row[key] for row in (matrix.get("include") or []) if key in row]
+        for row in rows:
+            value = row
+            for step in rest:
+                value = value.get(step) if isinstance(value, dict) else None
+            if value is not None:
+                labels.append(value)
+    return labels
 
 
 def test_every_job_names_a_runner_that_exists():
@@ -156,10 +200,11 @@ def test_every_job_names_a_runner_that_exists():
     nothing and the job fails at dispatch. A misspelled *label* is not an error
     either -- the job simply never gets a runner. Both are only visible after a
     push, so both are checked here: the matrix key must be declared by the job,
-    and every literal label -- hard-coded or listed in the matrix it comes from
-    -- must be one of ``KNOWN_RUNNER_LABELS``.
+    and every literal label -- hard-coded, listed in the matrix it comes from, or
+    reached through a **dotted** path like ``matrix.platform.runner`` -- must be
+    one of ``KNOWN_RUNNER_LABELS``. Every job must yield at least one such label,
+    which is what stops a ``runs-on`` this lint cannot read from passing green.
     """
-    expr = re.compile(r"\$\{\{\s*matrix\.([A-Za-z_][A-Za-z0-9_-]*)\s*\}\}")
     for path, doc in _workflows():
         for name, job in doc["jobs"].items():
             where = f"{path.name}:{name}"
@@ -168,32 +213,15 @@ def test_every_job_names_a_runner_that_exists():
             runs_on = job.get("runs-on")
             assert runs_on, f"{where} has no runs-on"
             matrix = (job.get("strategy") or {}).get("matrix") or {}
-            declared = set(matrix)
-            keys = expr.findall(str(runs_on))
-            for key in keys:
-                assert key in declared, (
-                    f"{where}: runs-on uses matrix.{key}, which the job does not declare "
-                    f"(declared: {sorted(declared)})"
-                )
-                # The values that key expands to are labels too. `include` rows
-                # can add more; those are checked as well when they name it.
-                values = matrix[key]
-                if isinstance(values, list):
-                    for value in values:
-                        assert value in KNOWN_RUNNER_LABELS, (
-                            f"{where}: matrix.{key} offers {value!r}, which is not a "
-                            f"runner label this repository has checked"
-                        )
-                for row in matrix.get("include") or []:
-                    if key in row:
-                        assert row[key] in KNOWN_RUNNER_LABELS, (
-                            f"{where}: matrix include sets {key}={row[key]!r}, which is "
-                            f"not a runner label this repository has checked"
-                        )
-            if not keys and "${{" not in str(runs_on):
-                assert runs_on in KNOWN_RUNNER_LABELS, (
-                    f"{where}: runs-on {runs_on!r} is not a runner label this "
-                    f"repository has checked (typo, or an image nobody verified)"
+            labels = _runner_labels(runs_on, matrix)
+            assert labels, (
+                f"{where}: runs-on {runs_on!r} resolves to no label this lint can "
+                f"check -- an unreadable runs-on is not a checked one"
+            )
+            for label in labels:
+                assert label in KNOWN_RUNNER_LABELS, (
+                    f"{where}: runs-on can expand to {label!r}, which is not a runner "
+                    f"label this repository has checked (typo, or an image nobody verified)"
                 )
             assert job.get("steps"), f"{where} has no steps"
             for i, step in enumerate(job["steps"]):
@@ -258,6 +286,91 @@ def test_assemble_matrix_names_a_malformed_record(monkeypatch, tmp_path):
     assert not out.exists()
 
 
+def test_assemble_matrix_names_a_missing_tail_instead_of_raising_keyerror(
+    monkeypatch, tmp_path
+):
+    """The guard required four keys; the table indexes five.
+
+    ``r["tail"]`` at line 82 was read unguarded, so exactly the failure the
+    guard was written to eliminate -- "a bare ``KeyError`` from inside a
+    comprehension, naming neither the key nor the file" -- still happened for
+    ``tail``: rc=1 and *zero* bytes on stdout, so ``| tee -a
+    "$GITHUB_STEP_SUMMARY"`` wrote an empty job summary with no named error, no
+    table and no cell. ``test_install_cell_writes_every_key_assemble_matrix_reads``
+    already puts ``tail`` in the contract, so the two halves disagreed.
+    """
+    cells = tmp_path / "cells"
+    cells.mkdir()
+    broken = _record("gist-select", "Linux", "3.12", status="fail")
+    del broken["tail"]
+    (cells / "a.json").write_text(json.dumps(broken), encoding="utf-8")
+    out = tmp_path / "install-matrix.json"
+
+    code, text = _run_assemble(monkeypatch, cells, out)
+    assert code == 1
+    assert "Malformed cell record" in text
+    assert "a.json" in text and "`tail`" in text
+    assert not out.exists()
+
+
+def test_assemble_matrix_names_an_unusable_python_version(monkeypatch, tmp_path):
+    """The guard checked key presence, never value validity.
+
+    ``tuple(int(x) for x in v.split("."))`` crashes on an empty or non-numeric
+    ``python``, which ``install_cell.sh`` can write: ``PY_VER="$(python -c ...)"``
+    yields ``""`` when that command fails, and ``set -u`` without ``set -e``
+    lets the script carry on and write the record. Measured before this:
+    ``ValueError: invalid literal for int() with base 10: ''``, rc=1, empty
+    stdout -- a red ``assemble`` job with no diagnosis in the summary.
+    """
+    out = tmp_path / "install-matrix.json"
+    for i, version in enumerate(("", "3.x", "three.twelve", "3..12")):
+        cells = tmp_path / f"cells{i}"
+        cells.mkdir()
+        record = _record("divsel", "Linux", version)
+        (cells / "a.json").write_text(json.dumps(record), encoding="utf-8")
+
+        code, text = _run_assemble(monkeypatch, cells, out)
+        assert code == 1, version
+        assert "Malformed cell record" in text, version
+        assert "a.json" in text and repr(version) in text, version
+        assert "| library |" not in text, version
+        assert not out.exists(), version
+
+
+def test_assemble_matrix_reports_a_failed_cell_with_no_first_line_from_its_tail(
+    monkeypatch, tmp_path
+):
+    """Both sub-branches of ``r.get("first_line") or (r["tail"][-1] if ...)``.
+
+    Every ``_record`` in this file gives a truthy ``first_line``, which
+    short-circuits the whole expression -- so the fallback to the log tail, the
+    one thing that puts *something* in a failed cell when pip printed nothing on
+    its first line, had never run.
+    """
+    cells = tmp_path / "cells"
+    cells.mkdir()
+    from_tail = _record("gist-select", "Linux", "3.12", status="fail")
+    from_tail["first_line"] = ""
+    from_tail["tail"] = ["...", "ERROR: no matching distribution"]
+    (cells / "a.json").write_text(json.dumps(from_tail), encoding="utf-8")
+    nothing = _record("submodlib-py", "Linux", "3.12", status="fail")
+    nothing["first_line"] = ""
+    nothing["tail"] = []
+    (cells / "b.json").write_text(json.dumps(nothing), encoding="utf-8")
+    out = tmp_path / "install-matrix.json"
+
+    code, text = _run_assemble(monkeypatch, cells, out)
+    assert code == 0
+    lines = text.splitlines()
+    assert "ERROR: no matching distribution" in next(
+        ln for ln in lines if ln.startswith("| gist-select |")
+    )
+    # An empty tail is an empty cell body, not a crash and not "not run".
+    empty = next(ln for ln in lines if ln.startswith("| submodlib-py |"))
+    assert "fail: ``" in empty and "not run" not in empty
+
+
 def test_install_cell_writes_every_key_assemble_matrix_reads():
     """The two halves of the cell-record contract, pinned to each other.
 
@@ -275,3 +388,212 @@ def test_install_cell_writes_every_key_assemble_matrix_reads():
     needed |= {"first_line", "tail"}  # read through `r.get(...)`/indexing above
     missing = needed - written
     assert not missing, f"install_cell.sh writes no {sorted(missing)}"
+
+
+def test_no_workflow_gate_captures_output_it_only_prints_on_success():
+    r"""``out=$(cmd 2>&1)`` then ``echo "$out"`` under ``set -e`` is backwards.
+
+    The shell exits at the assignment when ``cmd`` fails, so the ``echo`` runs
+    only on success: the output is printed when nobody needs it and discarded
+    when they do. Verified: ``set -euo pipefail; out=$(echo 'important
+    diagnostics'; exit 3); echo "$out"`` exits 3 having printed nothing. Both
+    of ci.yml's grep gates were written that way, so a ``cargo test --benches``
+    that failed to compile, or a failing aarch64 ``metric::`` run, turned the
+    step red with an empty log.
+
+    A gate must stream its command's output (``| tee``) so a failure is
+    readable, and ``pipefail`` still fails the step.
+    """
+    for path, doc in _workflows():
+        for name, job in doc["jobs"].items():
+            if "uses" in job:
+                continue
+            for i, step in enumerate(job.get("steps") or []):
+                script = step.get("run") or ""
+                if "set -e" not in script:
+                    continue
+                assert not re.search(r"^\s*[A-Za-z_]\w*=\$\(", script, re.M), (
+                    f"{path.name}:{name} step {i} ({step.get('name')!r}) captures a "
+                    f"command's output into a variable under `set -e`, which prints it "
+                    f"only when the command succeeded"
+                )
+
+
+# --------------------------------------------------------------------------- #
+# docs prose vs git state                                                     #
+# --------------------------------------------------------------------------- #
+
+# Claims about CI having never happened. Each is falsified the moment a remote
+# tracking branch exists, and no test compared any of them to git -- which is
+# how "no workflow in this repository has ever run" survived three review
+# rounds while `.git/logs/refs/remotes/origin/feat/v0.1` recorded nine pushes
+# of a tree containing `.github/workflows/ci.yml`, whose trigger is
+# `push: branches: [main, "feat/**"]`.
+_STALE_CI_CLAIMS = (
+    "has not been pushed to CI",
+    "has never been pushed",
+    "no workflow in this repository has ever run",
+    "the workflow itself has not run",
+    "not run yet",
+    "never been through CI",
+)
+
+_CI_DOCS = ("docs/RELEASE.md", "docs/benchmarks/README.md", "README.md")
+
+
+def test_no_doc_claims_ci_never_ran_while_git_records_pushes():
+    """Prose that says "this has never reached CI" must agree with the refs.
+
+    A reader following ``docs/RELEASE.md`` step 1 on the strength of such a
+    claim runs ``gh repo create ... --source . --push`` and gets "Name already
+    exists on this account".
+    """
+    git_dir = ROOT / ".git"
+    if not git_dir.is_dir():  # pragma: no cover - an exported or installed tree
+        pytest.skip(f"{git_dir} is not present")
+    remotes = git_dir / "refs" / "remotes"
+    logs = git_dir / "logs" / "refs" / "remotes"
+    pushed = sorted(
+        {p.name for p in remotes.rglob("*") if p.is_file()}
+        | {p.name for p in logs.rglob("*") if p.is_file()}
+    )
+    if not pushed:
+        pytest.skip("no remote-tracking refs: nothing has been pushed from here")
+
+    for name in _CI_DOCS:
+        path = ROOT / name
+        if not path.exists():  # pragma: no cover
+            continue
+        text = path.read_text(encoding="utf-8")
+        for claim in _STALE_CI_CLAIMS:
+            assert claim not in text, (
+                f"{name} says {claim!r}, but this checkout has pushed remote-tracking "
+                f"refs ({', '.join(pushed)}); the workflows live in the pushed tree"
+            )
+
+
+def test_release_uploads_and_the_publish_glob_agree():
+    """``release.yml`` has no assertion beyond "it parses and declares jobs".
+
+    The publish job downloads every artifact and then names ``wheels-*/*`` twice
+    -- once for the attestation, once for ``uv publish``. Renaming an upload to
+    anything outside that glob publishes fewer wheels than were built, on a tag
+    push, with both steps green: ``uv publish`` uploads whatever the glob
+    matched. So the two halves are pinned to each other here.
+    """
+    path = WORKFLOWS / "release.yml"
+    if not path.exists():  # pragma: no cover - an installed copy has no .github/
+        pytest.skip(f"{path} is not present")
+    yaml = pytest.importorskip("yaml", reason="PyYAML is needed to lint the workflows")
+    doc = yaml.safe_load(path.read_text(encoding="utf-8"))
+
+    uploads = [
+        step["with"]["name"]
+        for job in doc["jobs"].values()
+        for step in (job.get("steps") or [])
+        if str(step.get("uses", "")).startswith("actions/upload-artifact")
+    ]
+    assert uploads, "no upload-artifact step: the publish job would have nothing to publish"
+    prefix = "wheels-"
+    for name in uploads:
+        assert name.startswith(prefix), (
+            f"release.yml uploads {name!r}, which the publish job's {prefix}*/* glob "
+            f"does not match -- those wheels would be built and never published"
+        )
+
+    publish = doc["jobs"]["release"]
+    globs = [
+        value
+        for step in publish["steps"]
+        for value in (
+            [step.get("run", "")]
+            + [str(v) for v in (step.get("with") or {}).values()]
+        )
+        if f"{prefix}*/*" in str(value)
+    ]
+    assert len(globs) == 2, (
+        "expected the attestation subject-path and the uv publish argument to be the "
+        f"only two {prefix}*/* globs, found {globs}"
+    )
+    # Every job whose wheels the release needs must actually be a dependency.
+    building = {
+        name
+        for name, job in doc["jobs"].items()
+        for step in (job.get("steps") or [])
+        if str(step.get("uses", "")).startswith("actions/upload-artifact")
+    }
+    assert building <= set(publish["needs"]), (
+        f"{sorted(building - set(publish['needs']))} upload wheels but the release job "
+        f"does not need them, so it can publish before they exist"
+    )
+
+
+def test_install_cell_actually_runs_and_writes_a_record_assemble_can_read(
+    monkeypatch, tmp_path
+):
+    """``install_cell.sh`` had no executable coverage at all.
+
+    The only test touching it regex-greps its source text, so its venv trap, its
+    ``INSTALL_RC``/``IMPORT_RC`` capture and its record-writing heredoc had never
+    been run -- on any platform, by anything. This drives it end to end against a
+    package that cannot exist, with ``PIP_NO_INDEX`` so pip fails offline in
+    milliseconds, and then feeds the record it wrote through the assembler that
+    is its only reader.
+
+    Costs one ``python -m venv`` (about 8 s), which is the script under test.
+    """
+    script = SCRIPTS / "install_cell.sh"
+    if not script.exists():  # pragma: no cover - an installed copy has no .github/
+        pytest.skip(f"{script} is not present")
+    bash = shutil.which("bash")
+    if bash is None:  # pragma: no cover - no POSIX shell on this host
+        pytest.skip("bash is not on PATH")
+
+    work = tmp_path / "work"
+    work.mkdir()
+    cells = tmp_path / "cells"
+    env = {
+        **os.environ,
+        "PIP_NO_INDEX": "1",
+        "PIP_DISABLE_PIP_VERSION_CHECK": "1",
+        "RUNNER_OS": "Linux",
+    }
+    proc = subprocess.run(
+        [
+            bash,
+            str(script),
+            "divsel",
+            "divsel-no-such-package-xyz",
+            "divsel_no_such_module",
+            str(cells),
+        ],
+        cwd=work,
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=600,
+    )
+    # "Never exits non-zero for an install failure -- the failure IS the
+    # measurement."
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    # The venv trap cleaned up after itself, in the directory it ran in.
+    assert not list(work.glob("venv-*")), "the EXIT trap left a venv behind"
+
+    written = list(cells.glob("*.json"))
+    assert len(written) == 1, written
+    assert written[0].name.startswith("Linux-py"), written[0].name
+    record = json.loads(written[0].read_text(encoding="utf-8"))
+    assemble = _load(SCRIPTS / "assemble_matrix.py")
+    for key in ("library", "os", "python", "status", "tail"):
+        assert key in record, key
+    assert assemble._version_key(record["python"]), record["python"]
+    assert record["status"] == "fail" and record["install_rc"] != 0
+    assert record["import_rc"] != 0
+    assert record["tail"], "pip printed nothing into the log"
+    assert (cells / "divsel.log").exists()
+
+    # And the assembler reads it without a word of special handling.
+    out = tmp_path / "install-matrix.json"
+    code, text = _run_assemble(monkeypatch, cells, out)
+    assert code == 0, text
+    assert "| divsel |" in text and "1 cells" in text

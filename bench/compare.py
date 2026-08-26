@@ -589,7 +589,17 @@ def run_cell(method: str, n: int, dim: int, k: int, utility: str, args, diameter
     )
     try:
         stdout, stderr = proc.communicate(timeout=hard_limit)
-    except subprocess.TimeoutExpired:
+    except BaseException as exc:
+        # Anything that is not a clean return leaves the worker -- and the
+        # joblib/loky pool it spawned, 2-4 GiB per the tables in
+        # docs/benchmarks/README.md -- running: a Ctrl-C
+        # (`KeyboardInterrupt`), a `MemoryError`, an `OSError` on the pipes.
+        # Only `TimeoutExpired` used to be handled, so Ctrl-C during a 100k
+        # facility-location cell left exactly the orphan tree `kill_tree`'s
+        # docstring says corrupts the next cell's wall clock and peak RSS.
+        if not isinstance(exc, subprocess.TimeoutExpired):
+            kill_tree(proc)
+            raise
         kill_tree(proc)
         # CPython documents the leak this closes, in `Popen._communicate`: "If
         # we time out, the threads remain reading and the fds left open in case
@@ -773,6 +783,23 @@ def main(argv=None) -> int:
     if unknown:
         print(f"unknown methods: {unknown}; known: {list(METHODS)}", file=sys.stderr)
         return 2
+    # A run whose methods or cells resolve to nothing used to print a two-line
+    # header-only table and exit 0 -- the "degenerate table, green, zero
+    # measurements" state `.github/scripts/assemble_matrix.py` refuses on the CI
+    # side. Worse, with `--out` it still reached `merge_into`, whose
+    # unconditional `doc["meta"] = meta` restamped a published results file's
+    # environment block (machine, versions, date) having measured nothing.
+    cells = cells_for(args)
+    if not methods or not cells:
+        missing = "no methods" if not methods else "no cells"
+        print(
+            f"{missing}: nothing to measure "
+            f"(methods={methods}, n={args.n}, dim={args.dim}, k={args.k}). "
+            "No table, and --out is left untouched.",
+            file=sys.stderr,
+        )
+        print(f"{missing}: nothing to measure; no table, and --out is untouched.")
+        return 2
     meta = environment()
     meta.update(runs=args.runs, timeout_s=args.timeout)
     # The invocation is recorded on every cell, not in `meta`: `--out` merges cell by cell across
@@ -780,7 +807,7 @@ def main(argv=None) -> int:
     argv = sys.argv[1:]
     print(json.dumps({**meta, "argv": argv}, indent=1), file=sys.stderr)
     results = []
-    for n, dim, k, utility, diameter in cells_for(args):
+    for n, dim, k, utility, diameter in cells:
         for method, effective, reason in resolve_methods(methods, n):
             if effective is None:
                 results.append(

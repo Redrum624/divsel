@@ -24,6 +24,7 @@ import threading
 import time
 from pathlib import Path
 from types import SimpleNamespace
+from unittest import mock
 
 import pytest
 
@@ -476,3 +477,86 @@ def test_readme_table_main_validates_rows_before_importing_gist_select(monkeypat
         table.main()
     assert "--rows" in str(info.value)
     assert "out of range" in str(info.value)
+
+
+def test_a_run_that_measures_nothing_says_so_and_fails(tmp_path, capsys):
+    """A header-only table, exit 0, is the "degenerate table, green, zero
+    measurements" failure ``assemble_matrix.py`` was hardened against on the CI
+    side -- and ``test_assemble_matrix_with_no_cells_says_so_and_fails`` forbids
+    there.
+
+    Measured before this: ``compare.py --methods "" --n 100 --dim 4 --k 2``
+    printed two header lines and exited 0, and so did ``--n ""``. With ``--out``
+    it still reached ``merge_into``, whose unconditional ``doc["meta"] = meta``
+    restamped a published results file's environment block having measured
+    nothing at all.
+    """
+    compare = _load("compare")
+    published = tmp_path / "results.json"
+    compare.merge_into(
+        published,
+        {"machine": "the machine that measured it", "date": "2026-08-22"},
+        [{"n": 10, "dim": 2, "k": 2, "utility": "linear", "method": "divsel", "eval_f": 1.0}],
+    )
+    before = json.loads(published.read_text(encoding="utf-8"))
+
+    for argv in (
+        ["--methods", "", "--n", "100", "--dim", "4", "--k", "2"],
+        ["--n", "", "--dim", "4", "--k", "2"],
+        ["--dim", "", "--n", "100", "--k", "2"],
+        ["--k", "", "--n", "100", "--dim", "4"],
+    ):
+        code = compare.main([*argv, "--out", str(published)])
+        text = capsys.readouterr().out
+        assert code != 0, argv
+        assert "| n | dim |" not in text, f"a degenerate table was printed anyway: {argv}"
+        assert "no cells" in text.lower() or "no methods" in text.lower(), argv
+        # The published file is untouched -- meta included.
+        assert json.loads(published.read_text(encoding="utf-8")) == before, argv
+
+
+def test_run_cell_kills_the_worker_tree_on_any_exception_not_just_a_timeout(tmp_path):
+    """``run_cell`` guarded only ``subprocess.TimeoutExpired``.
+
+    Any other exception out of ``proc.communicate`` -- ``KeyboardInterrupt``,
+    ``MemoryError``, ``OSError`` -- left the worker and its joblib/loky
+    descendants alive with no ``try/finally`` around the ``Popen``. Ctrl-C
+    during a 100k facility-location cell was exactly the condition
+    ``kill_tree``'s own docstring says corrupts the next cell's wall clock and
+    peak RSS.
+    """
+    compare = _load("compare")
+    proc = subprocess.Popen(
+        [sys.executable, "-c", "import time; time.sleep(600)"],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    killed = []
+    real_kill_tree = compare.kill_tree
+
+    def spy(p):
+        killed.append(p)
+        real_kill_tree(p)
+
+    class Args:
+        runs = 1
+        timeout = 60
+        worker = False
+
+    try:
+        with mock.patch.object(compare, "kill_tree", spy), mock.patch.object(
+            compare.subprocess, "Popen", lambda *a, **kw: proc
+        ), mock.patch.object(
+            proc, "communicate", mock.Mock(side_effect=KeyboardInterrupt("ctrl-c"))
+        ):
+            with pytest.raises(KeyboardInterrupt):
+                compare.run_cell("divsel", 10, 2, 2, "linear", Args(), "exact")
+        assert killed == [proc], "the worker tree was not killed on the way out"
+        assert proc.wait(timeout=30) is not None, "the worker is still running"
+    finally:
+        real_kill_tree(proc)
+        proc.wait(timeout=30)
+        for pipe in (proc.stdout, proc.stderr):
+            if pipe is not None and not pipe.closed:
+                pipe.close()

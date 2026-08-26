@@ -4,32 +4,42 @@ Everything buildable was built and verified locally (see "Verification log" belo
 What remains is exactly the outward-facing actions: pushing, publishing, and the
 one-time PyPI/GitHub configuration. Run these **in order**.
 
-## 1. Merge and create the public repository
+## 1. Merge and flip the repository to public
 
-Merge `feat/v0.1` into `main`, then create and push the GitHub repo:
+**The repository already exists and is already pushed.** `git remote -v` in this
+checkout is <https://github.com/Redrum624/divsel.git>, created 2026-08-21 and
+**private**; `feat/v0.1` and `main` are both pushed
+(`.git/logs/refs/remotes/origin/feat/v0.1` records nine `update by push`
+entries, the last at f7027c8 on 2026-08-25). So `gh repo create` is not the
+step — it fails with "Name already exists on this account". Merge and push:
 
 ```
 git checkout main
 git merge --ff-only feat/v0.1     # falls back: git merge --no-ff feat/v0.1
-gh repo create Redrum624/divsel --public --source . --push
+git push
+gh repo edit Redrum624/divsel --visibility public --accept-visibility-change-consequences
 ```
 
-(or create the repo first, then `git remote add origin git@github.com:Redrum624/divsel.git`
-and `git push -u origin main`).
-
 > Note: taking the repo public was your earlier decision (private until release);
-> `--public` here is that flip. If you want a last look first, use `--private` and
-> run `gh repo edit Redrum624/divsel --visibility public --accept-visibility-change-consequences` when ready.
->
-> Either path keeps the **`simd parity (aarch64)`** job, which is the only one in
-> `ci.yml` asking for a hosted arm64 runner (`runs-on: ubuntu-24.04-arm`) and the
-> sole gate for the aarch64 half of the R-G22 bit-identity promise. GitHub made
-> arm64 standard runners available in **private** repositories on 2026-01-29,
-> against the plan's free minute allocation
+> the `gh repo edit` line above is that flip. Staying private costs nothing here:
+> the **`simd parity (aarch64)`** job — the only one in `ci.yml` asking for a
+> hosted arm64 runner (`runs-on: ubuntu-24.04-arm`), and the sole gate for the
+> aarch64 half of the R-G22 bit-identity promise — has already run green in this
+> private repository (run 32901377186, 2026-08-25), which is what GitHub's
+> 2026-01-29 change made possible
 > (<https://github.blog/changelog/2026-01-29-arm64-standard-runners-are-now-available-in-private-repositories/>,
-> checked 2026-08-25), so the private path does not drop it. What is still
-> unproven is everything else: no workflow in this repository has ever run
-> — see `docs/benchmarks/README.md`.
+> checked 2026-08-25).
+>
+> **What CI has and has not proved.** `checks` has run three times, all green,
+> most recently 2026-08-25 on the tree at f7027c8 — 14 jobs each: `rust`,
+> `simd parity (aarch64)` and the 12 python cells. `install-matrix` has run five
+> times, all green (see `docs/benchmarks/README.md`). What is unproven is
+> **this** tree: `git rev-list --left-right --count origin/feat/v0.1...HEAD`
+> reports `0 18`, so the 18 commits since that push — including the `golden`
+> conformance job, the `cargo doc` and LICENSE gates, the bench-target guard and
+> the MSRV check on `divsel-py` — have never been through a runner. Push before
+> tagging, and read the run before you tag. `release.yml` has never run at all:
+> nothing has triggered it, because nothing has been tagged.
 
 ## 2. Publish the crate
 

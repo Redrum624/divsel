@@ -16,6 +16,18 @@ LIBRARIES = ["gist-select", "submodlib-py", "gist-sampling", "divsel"]
 OS_ORDER = ["Linux", "Windows", "macOS"]
 
 
+def _version_key(version: str) -> tuple[int, ...]:
+    """``"3.12"`` -> ``(3, 12)``; anything unparseable -> ``()``.
+
+    Both the guard and the sort use this, so "the value the guard accepted" and
+    "the value the sort parses" cannot be two different judgements.
+    """
+    parts = version.split(".")
+    if not all(part.isdigit() for part in parts) or not parts:
+        return ()
+    return tuple(int(part) for part in parts)
+
+
 def main() -> int:
     cells_dir, out = Path(sys.argv[1]), Path(sys.argv[2])
     records = [json.loads(p.read_text(encoding="utf-8")) for p in sorted(cells_dir.rglob("*.json"))]
@@ -36,24 +48,36 @@ def main() -> int:
     # a bare `KeyError` from inside a comprehension, naming neither the key nor
     # the file. install_cell.sh writes these, and nothing but this script reads
     # them, so a renamed key there is exactly the failure that has to be
-    # readable here.
-    required = ("library", "os", "python", "status")
+    # readable here. `tail` is in the list because line 82 indexes it: leaving it
+    # out reproduced the same bare KeyError -- rc=1 with zero bytes on stdout, so
+    # `tee -a $GITHUB_STEP_SUMMARY` wrote an empty summary.
+    required = ("library", "os", "python", "status", "tail")
     malformed = [
-        (path, key)
+        (path, f"has no `{key}`")
         for path, record in zip(sorted(cells_dir.rglob("*.json")), records)
         for key in required
         if key not in record
     ]
+    # Presence is not validity: `python` is parsed into a sort key, and
+    # install_cell.sh can write an empty one -- `PY_VER="$(python -c ...)"` is ""
+    # when that command fails, and `set -u` without `set -e` lets the script
+    # carry on and write the record anyway. Unchecked, that was a `ValueError`
+    # out of the sort lambda with the same empty-summary outcome.
+    malformed += [
+        (path, f"has an unusable `python` value {record['python']!r}")
+        for path, record in zip(sorted(cells_dir.rglob("*.json")), records)
+        if "python" in record and not _version_key(record["python"])
+    ]
     if malformed:
         print("## Installability matrix")
         print("")
-        for path, key in malformed:
-            print(f"**Malformed cell record**: `{path}` has no `{key}`.")
+        for path, problem in malformed:
+            print(f"**Malformed cell record**: `{path}` {problem}.")
         print("")
         print("install_cell.sh writes these records and this script is their only")
         print("reader; a key renamed on one side is a broken run, not a blank cell.")
         return 1
-    pythons = sorted({r["python"] for r in records}, key=lambda v: tuple(int(x) for x in v.split(".")))
+    pythons = sorted({r["python"] for r in records}, key=_version_key)
     oses = [o for o in OS_ORDER if any(r["os"] == o for r in records)]
     oses += sorted({r["os"] for r in records} - set(oses))
     by_key = {(r["library"], r["os"], r["python"]): r for r in records}
