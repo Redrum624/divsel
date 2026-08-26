@@ -168,6 +168,18 @@ class DivselRetriever(BaseRetriever):
                 query, "embeddings.embed_documents is not implemented"
             )
 
+        # A return whose length does not match `docs` is a failure, not a
+        # shape: an empty list reached `np.linalg.norm(v, axis=1)` on a 1-D
+        # array and raised a raw numpy `AxisError`, a short one silently
+        # diversified over a prefix of `docs`, and a long one let `selected`
+        # index past the end of `docs` with an `IndexError`.
+        if len(doc_vecs) != len(docs):
+            return self._fallback(
+                query,
+                f"embeddings.embed_documents returned {len(doc_vecs)} vectors "
+                f"for {len(docs)} documents",
+            )
+
         vectors = np.ascontiguousarray(doc_vecs, dtype=np.float32)
 
         if self.utility == "linear":

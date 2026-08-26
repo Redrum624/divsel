@@ -135,9 +135,27 @@ class DivselNodePostprocessor(BaseNodePostprocessor):
         if all(e is not None for e in node_embeddings):
             raw_vectors = node_embeddings
         elif self.embed_model is not None:
-            raw_vectors = self.embed_model.get_text_embedding_batch(
-                [n.node.get_content() for n in nodes]
-            )
+            # An embed model is free to implement only the single-text hook, or
+            # none at all: unguarded, that `NotImplementedError` escaped past
+            # both the warn path and the `strict=True` ValueError path.
+            try:
+                raw_vectors = self.embed_model.get_text_embedding_batch(
+                    [n.node.get_content() for n in nodes]
+                )
+            except NotImplementedError:
+                return self._fallback(
+                    nodes, "embed_model.get_text_embedding_batch is not implemented"
+                )
+            # And a model that returns the wrong number of vectors is a failure
+            # too, not a shape: an empty list made numpy raise `AxisError` from
+            # inside `_linear_weights`, a short one silently diversified over a
+            # prefix of `nodes`, and a long one let `selected` index past them.
+            if len(raw_vectors) != len(nodes):
+                return self._fallback(
+                    nodes,
+                    f"embed_model.get_text_embedding_batch returned "
+                    f"{len(raw_vectors)} vectors for {len(nodes)} nodes",
+                )
         else:
             return self._fallback(
                 nodes, "nodes carry no embeddings and no embed_model is set"

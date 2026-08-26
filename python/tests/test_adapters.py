@@ -848,3 +848,135 @@ def test_llamaindex_zero_norm_vectors_do_not_divide_by_zero():
     assert np.isfinite(w).all()
     # cos is 0 against a zero query, so every weight is the shift itself.
     assert np.allclose(w, 1.0)
+
+
+# --------------------------------------------------------------------------- #
+# Round-3 gaps: the embedding hooks that can fail without raising              #
+# --------------------------------------------------------------------------- #
+
+
+@pytest.mark.parametrize(
+    "returned,reason",
+    [
+        (None, "get_text_embedding_batch is not implemented"),
+        ([], "returned 0 vectors for 12 nodes"),
+        ("short", "returned 3 vectors for 12 nodes"),
+        ("long", "returned 13 vectors for 12 nodes"),
+    ],
+)
+def test_llamaindex_falls_back_when_the_embed_model_misbehaves(returned, reason):
+    """The LlamaIndex twin of the LangChain hook guards.
+
+    ``get_text_embedding_batch`` was called unguarded, so a model that does not
+    implement it raised ``NotImplementedError`` past BOTH the warn path and the
+    ``strict=True`` ``ValueError`` path -- the defect round 2 repaired on the
+    LangChain side. A model that returns the wrong number of vectors is the
+    same class of failure: an empty list made numpy raise ``AxisError`` deep
+    inside the core, and a short one silently diversified over a prefix of the
+    nodes.
+    """
+    pytest.importorskip("llama_index.core")
+    from divsel.adapters import DivselFallbackWarning
+    from divsel.adapters.llamaindex import DivselNodePostprocessor
+
+    ns = _li()
+    nodes = ns.make_nodes(with_embeddings=False)
+
+    class Misbehaving(ns.TinyEmbedModel):
+        def get_text_embedding_batch(self, texts, **kwargs):
+            if returned is None:
+                raise NotImplementedError
+            if returned == "short":
+                return [TABLE[t] for t in texts[:3]]
+            if returned == "long":
+                return [TABLE[t] for t in texts] + [TABLE[texts[0]]]
+            return list(returned)
+
+    pp = DivselNodePostprocessor(k=4, embed_model=Misbehaving())
+    with pytest.warns(DivselFallbackWarning, match=reason):
+        out = pp.postprocess_nodes(nodes, query_str=QUERY_TEXT)
+    assert out == _topk_by_score(nodes, 4)
+
+    strict = DivselNodePostprocessor(k=4, embed_model=Misbehaving(), strict=True)
+    with pytest.raises(ValueError, match=reason):
+        strict.postprocess_nodes(nodes, query_str=QUERY_TEXT)
+
+
+@pytest.mark.parametrize(
+    "count,reason",
+    [
+        (0, "returned 0 vectors for 12 documents"),
+        (3, "returned 3 vectors for 12 documents"),
+        (13, "returned 13 vectors for 12 documents"),
+    ],
+)
+def test_langchain_falls_back_when_embed_documents_returns_the_wrong_count(count, reason):
+    """A return whose length does not match ``docs`` is a failure, not a shape.
+
+    Measured before this guard: an empty list reached
+    ``np.linalg.norm(v, axis=1)`` on a 1-D array and raised a raw
+    ``numpy.AxisError`` (and, under ``facility_location``, the binding's
+    ``TypeError`` about C-contiguous float32 -- two different errors for one
+    input); three vectors for six documents diversified over the first three
+    with no warning at all; and a longer return let ``selected`` index past the
+    end of ``docs`` with an ``IndexError``.
+    """
+    pytest.importorskip("langchain_core")
+    from divsel.adapters import DivselFallbackWarning
+    from divsel.adapters.langchain import DivselRetriever
+
+    ns = _lc_edge()
+
+    class WrongCount(ns.Partial):
+        def embed_documents(self, texts):
+            vectors = [TABLE[t] for t in texts]
+            if count <= len(vectors):
+                return vectors[:count]
+            return vectors + [vectors[0]] * (count - len(vectors))
+
+    store = ns.Store(WrongCount())
+    retriever = DivselRetriever(vectorstore=store, k=4)
+    with pytest.warns(DivselFallbackWarning, match=reason):
+        docs = retriever.invoke(QUERY_TEXT)
+    assert [d.page_content for d in docs] == [TEXTS[i] for i in RELEVANCE_ORDER[:4]]
+
+    strict = DivselRetriever(vectorstore=store, k=4, strict=True)
+    with pytest.raises(ValueError, match=reason):
+        strict.invoke(QUERY_TEXT)
+
+
+def test_min_eps_is_the_cores_own_floor_and_is_accepted():
+    """``MIN_EPS`` is a hand-copied constant; nothing pinned it to its source.
+
+    Both adapters advertise ``eps`` in ``[MIN_EPS, 1.0]`` because that is the
+    range :func:`divsel.gist_select` serves. The existing parametrisations only
+    assert rejection *below* the floor, so a typo that narrowed (or widened)
+    MIN_EPS would leave every test passing while legitimate configurations
+    started failing at construction.
+    """
+    from divsel import gist_select
+    from divsel.adapters import MIN_EPS
+
+    assert MIN_EPS == float(np.finfo(np.float32).eps) == 2.0**-23
+    # The library itself accepts exactly that value, and nothing below it.
+    x = np.ascontiguousarray(_fixture_vectors(), dtype=np.float32)
+    assert gist_select(x, None, k=2, eps=MIN_EPS, metric="cosine")
+    with pytest.raises(ValueError):
+        gist_select(x, None, k=2, eps=MIN_EPS * 0.5, metric="cosine")
+
+    if importlib.util.find_spec("langchain_core") is not None:
+        from divsel.adapters.langchain import DivselRetriever
+
+        ns = _lc_edge()
+        docs = DivselRetriever(
+            vectorstore=ns.Store(ns.Partial()), k=4, eps=MIN_EPS
+        ).invoke(QUERY_TEXT)
+        assert len(docs) <= 4
+    if importlib.util.find_spec("llama_index.core") is not None:
+        from divsel.adapters.llamaindex import DivselNodePostprocessor
+
+        ns = _li()
+        out = DivselNodePostprocessor(k=4, eps=MIN_EPS).postprocess_nodes(
+            ns.make_nodes(), query_str=QUERY_TEXT
+        )
+        assert len(out) <= 4
