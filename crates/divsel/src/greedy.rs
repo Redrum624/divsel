@@ -61,7 +61,9 @@ use crate::utility::Utility;
 ///
 /// # Budget
 ///
-/// `k == 0` returns empty. `k > pts.n()` is clamped to `pts.n()`.
+/// `k == 0` returns empty -- **before** any marginal is evaluated, on both
+/// paths, so the panic below cannot fire there. `k > pts.n()` is clamped to
+/// `pts.n()`.
 ///
 /// # Lazy evaluation
 ///
@@ -81,6 +83,8 @@ use crate::utility::Utility;
 /// Panics if `util` is not sized for `pts` — a per-point table shorter than
 /// `pts.n()`, or a [`crate::FacilityLocation`] cache built for another point
 /// count. Both panic in release as well as in debug; see [`Utility::marginal`].
+/// The one exception is `k == 0`: both paths return the empty selection without
+/// evaluating a marginal, so nothing there ever looks at `util`'s tables.
 pub fn greedy_independent_set(
     pts: &Points<'_>,
     util: &mut dyn Utility,
@@ -330,6 +334,35 @@ mod tests {
     /// exact tie: `5.0` at index 1 and index 2.
     fn line_six_weights() -> Vec<f64> {
         vec![3.0, 5.0, 5.0, 1.0, 4.0, 2.0]
+    }
+
+    /// `k == 0` returns empty without touching `util`, so the `# Panics`
+    /// contract has nothing to notice there.
+    ///
+    /// Both paths take an early return before the first marginal: `run_celf`
+    /// before it builds the heap (which would evaluate every point), `run_scan`
+    /// because `selected.len() < 0` is never true. A caller reading "passing a
+    /// utility built for a different number of points will therefore panic
+    /// rather than return an error" gets a plausible empty selection instead,
+    /// which is why both doc sections now say so.
+    #[test]
+    fn a_zero_budget_returns_empty_without_evaluating_a_marginal() {
+        let pts = line_six();
+
+        // CELF path: a facility-location cache built for two points, not six.
+        let mut mismatched = FacilityLocation::with_scale(2, 8.0);
+        assert!(
+            mismatched.validate(&pts).is_err(),
+            "the fixture must mismatch"
+        );
+        assert!(greedy_independent_set(&pts, &mut mismatched, 0.0, 0).is_empty());
+
+        // Scan path: a linear table of two weights, not six.
+        let mut short = Linear::new(vec![1.0, 2.0]);
+        assert!(short.is_linear());
+        assert!(short.validate(&pts).is_err(), "the fixture must mismatch");
+        assert!(greedy_independent_set(&pts, &mut short, 0.0, 0).is_empty());
+        assert!(greedy_independent_set_naive(&pts, &mut short, 0.0, 0).is_empty());
     }
 
     /// `n` random sparse subsets of `0..universe`, 1 to 4 items each.

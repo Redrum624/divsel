@@ -297,6 +297,15 @@ impl<const SQUARED_DIFFERENCE: bool> WithSimd for Kernel<'_, SQUARED_DIFFERENCE>
     /// lane count that does not divide [`LANES`] cannot host the fixed
     /// accumulator layout, so it takes the scalar body rather than a reduction
     /// order of its own.
+    ///
+    /// Only the arm the selected ISA needs is generated, so a single host
+    /// exercises exactly one of them.
+    /// `tests::every_register_layout_is_bit_identical_to_the_scalar_bodies`
+    /// enters the 16-, 8-, 4- and 1-lane arms on any CPU through pulp's
+    /// portable `Scalar512b`/`Scalar256b`/`Scalar128b`/`Scalar` types. The
+    /// 2-lane arm and the `_` fallback have no `Simd` type to enter them with
+    /// -- no instruction set pulp supports has two `f32` lanes, and every lane
+    /// count it does have divides [`LANES`] -- so those two stay defensive.
     #[inline(always)]
     fn with_simd<S: Simd>(self, simd: S) -> f32 {
         match S::F32_LANES {
@@ -347,7 +356,7 @@ pub(crate) fn sq_euclid(a: &[f32], b: &[f32]) -> f32 {
 mod tests {
     use pulp::{Simd, WithSimd};
 
-    use super::{arch, dot, dot_scalar, sq_euclid, sq_euclid_scalar, LANES};
+    use super::{arch, dot, dot_scalar, sq_euclid, sq_euclid_scalar, Kernel, LANES};
     use crate::metric::Metric;
     use crate::points::Points;
     use crate::testutil::SplitMix64;
@@ -367,6 +376,131 @@ mod tests {
         fn with_simd<S: Simd>(self, _simd: S) -> usize {
             S::F32_LANES
         }
+    }
+
+    /// Every lane count [`Kernel::with_simd`] has an arm for, exercised on this
+    /// host whatever `pulp` dispatched to.
+    ///
+    /// The arms are selected by `S::F32_LANES` and fold away at
+    /// monomorphisation, so only the one arm the selected ISA needs is ever
+    /// generated -- on an AVX2 runner that is the 8-lane arm and nothing else,
+    /// and the 16-, 4- and 1-lane register layouts ship untested. pulp's
+    /// portable `Scalar*` types have exactly those lane counts (`f32x16`,
+    /// `f32x4`, `f32`) and run on any CPU, so each arm can be entered here
+    /// directly instead of waiting for a host that has the matching ISA.
+    ///
+    /// The 2-lane arm and the `_` fallback have no `Simd` type at all -- no
+    /// instruction set pulp supports has two `f32` lanes, and every lane count
+    /// it does have divides [`LANES`] -- so they stay defensive and uncovered.
+    #[test]
+    fn every_register_layout_is_bit_identical_to_the_scalar_bodies() {
+        fn lanes_of<S: Simd>(_: S) -> usize {
+            S::F32_LANES
+        }
+
+        macro_rules! check_layout {
+            ($simd:expr, $lanes:literal) => {{
+                let simd = $simd;
+                assert_eq!(
+                    lanes_of(simd),
+                    $lanes,
+                    "pulp changed the lane count of {}",
+                    stringify!($simd)
+                );
+                for &dim in &PARITY_DIMS {
+                    for pair in 0..PARITY_PAIRS {
+                        let seed = ((dim as u64) << 32) | pair;
+                        let a = mixed_magnitude(dim, seed ^ 0xa5a5_a5a5_0000_0001);
+                        let b = mixed_magnitude(dim, seed ^ 0x5a5a_5a5a_0000_0002);
+                        assert_eq!(
+                            Kernel::<false> { a: &a, b: &b }.with_simd(simd).to_bits(),
+                            dot_scalar(&a, &b).to_bits(),
+                            "dot diverged on the {}-lane arm at dim {dim}, pair {pair}",
+                            $lanes
+                        );
+                        assert_eq!(
+                            Kernel::<true> { a: &a, b: &b }.with_simd(simd).to_bits(),
+                            sq_euclid_scalar(&a, &b).to_bits(),
+                            "sq_euclid diverged on the {}-lane arm at dim {dim}, pair {pair}",
+                            $lanes
+                        );
+                    }
+                }
+            }};
+        }
+
+        check_layout!(pulp::Scalar512b, 16);
+        check_layout!(pulp::Scalar256b, 8);
+        check_layout!(pulp::Scalar128b, 4);
+        check_layout!(pulp::Scalar::new(), 1);
+    }
+
+    /// Whether this host has an instruction set `pulp` can dispatch to, decided
+    /// by **runtime** CPU detection rather than by `target_arch`.
+    ///
+    /// pulp 0.22's x86 `Arch` is exactly `Scalar`, `V3` and `V4`; `Arch::new`
+    /// returns `Scalar` whenever `V3::try_new()` finds one of its features
+    /// missing, so every pre-AVX2 x86_64 CPU -- and any VM or emulator that
+    /// masks AVX2 -- legitimately runs the 1-lane body. The feature list below
+    /// is `pulp::x86::V3`'s own (pulp 0.22.3, `src/x86/v3.rs`), so this answers
+    /// the same question `Arch::new` asks. On `aarch64` NEON is part of the
+    /// architecture, which is why that arm is a `cfg!` and not a detection.
+    fn simd_isa_is_available() -> bool {
+        #[cfg(target_arch = "x86_64")]
+        {
+            std::arch::is_x86_feature_detected!("sse")
+                && std::arch::is_x86_feature_detected!("sse2")
+                && std::arch::is_x86_feature_detected!("fxsr")
+                && std::arch::is_x86_feature_detected!("sse3")
+                && std::arch::is_x86_feature_detected!("ssse3")
+                && std::arch::is_x86_feature_detected!("sse4.1")
+                && std::arch::is_x86_feature_detected!("sse4.2")
+                && std::arch::is_x86_feature_detected!("popcnt")
+                && std::arch::is_x86_feature_detected!("avx")
+                && std::arch::is_x86_feature_detected!("avx2")
+                && std::arch::is_x86_feature_detected!("bmi1")
+                && std::arch::is_x86_feature_detected!("bmi2")
+                && std::arch::is_x86_feature_detected!("fma")
+                && std::arch::is_x86_feature_detected!("lzcnt")
+        }
+        #[cfg(not(target_arch = "x86_64"))]
+        {
+            cfg!(target_arch = "aarch64")
+        }
+    }
+
+    /// The parity test's lane-count guard, as a pure decision so the case this
+    /// host cannot produce is still testable.
+    ///
+    /// A 1-lane arch is a failure **only** where the ISA is there to be used:
+    /// that is a silent pulp fallback, and it would turn every equality in the
+    /// parity test into a value compared with itself. Where the CPU has no such
+    /// ISA the 1-lane arch is the right answer and the guard must stay quiet --
+    /// keying it on `target_arch` alone (as an earlier version did) failed the
+    /// build on a correct crate running on a pre-AVX2 x86_64 host.
+    fn parity_guard_fires(isa_available: bool, lanes: usize) -> bool {
+        isa_available && lanes <= 1
+    }
+
+    /// The guard fires on a silent fallback and stays quiet on an honest one.
+    #[test]
+    fn a_one_lane_arch_is_only_a_failure_where_the_isa_exists() {
+        assert!(
+            parity_guard_fires(true, 1),
+            "a 1-lane arch on a host that has the ISA is the silent fallback this guards"
+        );
+        assert!(
+            !parity_guard_fires(false, 1),
+            "a 1-lane arch on a host without the ISA is pulp behaving correctly"
+        );
+        assert!(!parity_guard_fires(true, 8));
+        assert!(!parity_guard_fires(false, 8));
+        // And the guard agrees with the machine this run is on: whatever pulp
+        // selected here, the decision above must not condemn it.
+        assert!(!parity_guard_fires(
+            simd_isa_is_available(),
+            arch().dispatch(LaneCount)
+        ));
     }
 
     /// The dimensions the parity sweep covers: below, at and above the 16-element
@@ -415,15 +549,18 @@ mod tests {
     /// so a failure report names the ISA. The other half is CI: the same test on
     /// an AVX-512 host (16 lanes, one register) and on an `aarch64` NEON host
     /// (4 lanes, four registers) covers the remaining register layouts, and the
-    /// scalar fallback (1 lane, sixteen registers) is reachable on any host by
-    /// building `pulp` without its `x86-v3` feature.
+    /// scalar fallback (1 lane, sixteen registers) is what a host whose CPU
+    /// reports none of those feature sets selects: pulp's x86 `Arch` is
+    /// `Scalar`, `V3` or `V4` and nothing else, so an x86_64 CPU without AVX2
+    /// takes the 1-lane body at runtime.
     ///
-    /// On the two architectures this crate claims SIMD dispatch for the lane
-    /// count is **asserted**, not merely printed. At one lane the dispatched
-    /// kernel *is* the scalar body, so every equality below compares a value to
-    /// itself and the test proves nothing — which is precisely how a silent pulp
-    /// fallback on a CI runner would look. Elsewhere a one-lane arch is a
-    /// legitimate outcome and only the bit-identity claim is checked.
+    /// Where the ISA really is present the lane count is **asserted**, not
+    /// merely printed. At one lane the dispatched kernel *is* the scalar body,
+    /// so every equality below compares a value to itself and the test proves
+    /// nothing — which is precisely how a silent pulp fallback on a CI runner
+    /// would look. Where the CPU has no such ISA a
+    /// one-lane arch is the correct selection and only the bit-identity claim
+    /// is checked; [`simd_isa_is_available`] is what tells the two apart.
     #[test]
     fn the_dispatched_kernels_are_bit_identical_to_the_scalar_ones() {
         let lanes = arch().dispatch(LaneCount);
@@ -432,13 +569,20 @@ mod tests {
             arch(),
             LANES / lanes.max(1)
         );
-        #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
+        let isa = simd_isa_is_available();
         assert!(
-            lanes > 1,
-            "pulp selected {:?}, a {lanes}-lane arch, on a target that has SIMD: the comparisons \
-             below would then be the scalar body against itself and prove nothing",
+            !parity_guard_fires(isa, lanes),
+            "pulp selected {:?}, a {lanes}-lane arch, on a host whose CPU reports the ISA: \
+             the comparisons below would then be the scalar body against itself and prove \
+             nothing",
             arch()
         );
+        if !isa {
+            println!(
+                "no instruction set pulp can dispatch to is available here, so the 1-lane \
+                 scalar arch is the correct selection and the lane-count guard steps aside"
+            );
+        }
 
         for &dim in &PARITY_DIMS {
             for pair in 0..PARITY_PAIRS {

@@ -324,11 +324,25 @@ fn the_require_golden_override_is_read_the_way_ci_sets_it() {
 /// whole cross-language contract.
 #[test]
 fn a_missing_fixture_only_skips_outside_the_repository_that_owns_it() {
-    let root = std::env::temp_dir().join(format!(
+    /// Removes the scratch tree on the way out, panic or not.
+    ///
+    /// Every directory below is created under `std::env::temp_dir()` with a
+    /// pid-and-thread name, so a failing assertion used to leave the whole tree
+    /// behind and a red CI loop accumulated one copy per run.
+    struct ScratchDir(std::path::PathBuf);
+
+    impl Drop for ScratchDir {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    let scratch = ScratchDir(std::env::temp_dir().join(format!(
         "divsel-golden-policy-{}-{:?}",
         std::process::id(),
         std::thread::current().id()
-    ));
+    )));
+    let root = scratch.0.clone();
     let _ = std::fs::remove_dir_all(&root);
     std::fs::create_dir_all(&root).expect("scratch root");
 
@@ -389,5 +403,8 @@ fn a_missing_fixture_only_skips_outside_the_repository_that_owns_it() {
         Missing::Fail
     );
 
-    let _ = std::fs::remove_dir_all(&root);
+    // `scratch` removes the tree here, and just as reliably on the way out of a
+    // failing assertion above.
+    drop(scratch);
+    assert!(!root.exists(), "the scratch tree outlived the test");
 }

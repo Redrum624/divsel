@@ -440,6 +440,15 @@ fn farthest_from(pts: &Points<'_>, from: usize) -> usize {
 /// `f_value`, `g_value` or `div`, and only stops [`GistResult::stage`] from being
 /// relabelled [`Stage::Sweep`] by a threshold that did no work.
 ///
+/// # Extreme point sets
+///
+/// [`Points::new`] validates coordinates, not distances, so a point set of
+/// finite coordinates far enough apart overflows the `f32` squared difference
+/// and its diameter is `+inf`. That is not an error here: `div` and `d_max` are
+/// then `+inf`, and [`GistResult::f_value`] is `+inf` for any `lambda > 0` and
+/// exactly `g(S)` at `lambda == 0` (the diversity term is off, so it
+/// contributes `0` rather than the `0 * inf = NaN` the arithmetic would give).
+///
 /// # Errors
 ///
 /// In this order: [`DivselError::InvalidK`] if `cfg.k == 0`;
@@ -450,9 +459,11 @@ fn farthest_from(pts: &Points<'_>, from: usize) -> usize {
 ///
 /// # Panics
 ///
-/// Panics if `util` indexes a per-point table shorter than `pts.n()`. A
-/// [`Utility`] whose [`Utility::validate`] checks its own length, as all three
-/// built-ins do, cannot reach that.
+/// Panics if `util` is not sized for `pts` -- a per-point table shorter than
+/// `pts.n()`, or a [`crate::FacilityLocation`] cache built for another point
+/// count. Both panic in release as well as in debug; see [`Utility::marginal`].
+/// A [`Utility`] whose [`Utility::validate`] checks its own length, as all
+/// three built-ins do, is validated above and cannot reach either.
 ///
 /// # Examples
 ///
@@ -512,7 +523,20 @@ pub fn gist(
     let evaluate = |selected: &[usize], util: &mut dyn Utility| -> (f64, f64, f32) {
         let g_value = eval_g(util, selected, pts);
         let div_value = div_with_dmax(pts, selected, d_max);
-        (g_value + lambda * f64::from(div_value), g_value, div_value)
+        // `lambda == 0` switches the diversity term off, so its contribution is
+        // zero whatever `div` is -- written out because `0.0 * inf` is `NaN`,
+        // and `div` really can be `+inf`: `Points::new` validates coordinates,
+        // not distances, so a point set of finite coordinates far enough apart
+        // overflows the squared difference. A `NaN` here loses every `>=` in
+        // the fold below, which would report the line-2 branch's `stage` and
+        // `threshold` whatever the sweep found. `FacilityLocation::new` guards
+        // the same overflow with `usable_scale`.
+        let weighted = if lambda == 0.0 {
+            0.0
+        } else {
+            lambda * f64::from(div_value)
+        };
+        (g_value + weighted, g_value, div_value)
     };
 
     // Paper line 2: the classic greedy solution, i.e. the sweep at d = 0.
@@ -1874,6 +1898,46 @@ mod tests {
         assert_eq!(out.selected, vec![0]);
     }
 
+    /// A validated point set can still overflow `f32` in the distance kernel,
+    /// and `lambda == 0` must not turn that into a `NaN` objective.
+    ///
+    /// [`Points::new`] checks the **coordinates**, so `+-3e38` in one dimension
+    /// is a legal point set whose squared difference overflows: `d_max` and
+    /// `div` are `+inf`. `0.0 * inf` is `NaN`, and a `NaN` `f_value` then loses
+    /// every `>=` in the fold, so `stage` and `threshold` describe the line-2
+    /// branch whatever the sweep found -- reported next to a perfectly good
+    /// `g_value`, with no error. At `lambda == 0` the diversity term is switched
+    /// off, so its contribution is `0` whatever `div` is.
+    #[test]
+    fn a_zero_lambda_cannot_turn_an_infinite_diameter_into_a_nan() {
+        let pts = Points::new(vec![-3.0e38, 3.0e38], 1, Metric::Euclidean)
+            .expect("finite coordinates are a valid point set");
+        let mut util = Linear::uniform(pts.n());
+        let cfg = GistConfig {
+            k: 2,
+            lambda: 0.0,
+            ..Default::default()
+        };
+
+        let out = gist(&pts, &mut util, &cfg).expect("a validated input");
+        assert!(
+            out.d_max.is_infinite(),
+            "the fixture must actually overflow: d_max = {}",
+            out.d_max
+        );
+        assert!(
+            out.f_value.is_finite(),
+            "f_value = {} (g_value = {}, div = {})",
+            out.f_value,
+            out.g_value,
+            out.div
+        );
+        assert_eq!(
+            out.f_value, out.g_value,
+            "lambda = 0 means f == g, whatever div is"
+        );
+    }
+
     /// [`div`]'s documented panic has to fire on the `|S| <= 1` return path too,
     /// which returns the diameter without ever reading `s`.
     #[test]
@@ -2020,8 +2084,8 @@ mod tests {
         }
     }
 
-    /// `eps == 1` is the top of the documented `(0, 1]` range and is accepted;
-    /// the smallest f32 above it is not.
+    /// `eps == 1` is the top of the documented `[f32::EPSILON, 1]` range and is
+    /// accepted; the smallest f32 above it is not.
     #[test]
     fn eps_of_exactly_one_is_accepted() {
         let pts = line_five();
@@ -2050,9 +2114,10 @@ mod tests {
     /// The grid is built by `p *= 1 + eps` in f64 and cast to f32: below
     /// `f32::EPSILON` two consecutive entries cannot differ, and below `2^-53`
     /// `1.0 + eps` is exactly `1.0`, so the loop never advances -- an unbounded
-    /// push into a `Vec` that ends when the allocator gives up. A caller reading
-    /// the documented `(0, 1]` range would otherwise hand `1e-30` to a public API
-    /// and lose the process.
+    /// push into a `Vec` that ends when the allocator gives up. `1e-30` is
+    /// **outside** the documented `[f32::EPSILON, 1]` range precisely because of
+    /// that: before the floor existed the same call reached the public API and
+    /// lost the process.
     #[test]
     fn an_eps_below_the_f32_epsilon_is_rejected() {
         let pts = line_five();

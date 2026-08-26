@@ -597,6 +597,29 @@ mod tests {
         }
     }
 
+    /// [`Points::row`]'s documented panic, which is a `debug_assert!`: the
+    /// slice bounds below it catch an in-range-ish `i`, but `i * dim` wraps in
+    /// release for an absurd one and would hand back a wrong row.
+    #[test]
+    #[cfg(debug_assertions)]
+    #[should_panic(expected = "row 7 is out of range for 3 points")]
+    fn row_rejects_an_out_of_range_index() {
+        let pts = Points::new(vec![0.0, 1.0, 2.0, 3.0, 4.0, 5.0], 2, Metric::Euclidean)
+            .expect("three points");
+        let _ = pts.row(7);
+    }
+
+    /// [`Points::dist`]'s documented panic, on the `i == j` short circuit that
+    /// returns `0.0` in release before any row is touched.
+    #[test]
+    #[cfg(debug_assertions)]
+    #[should_panic(expected = "dist(7, 7) is out of range for 3 points")]
+    fn dist_rejects_an_out_of_range_index() {
+        let pts = Points::new(vec![0.0, 1.0, 2.0, 3.0, 4.0, 5.0], 2, Metric::Euclidean)
+            .expect("three points");
+        let _ = pts.dist(7, 7);
+    }
+
     #[test]
     fn diameter_agrees_with_a_serial_scan() {
         let pts = Points::new(sample(64, 5, 0x0f0f_0f0f), 5, Metric::Cosine).unwrap();
