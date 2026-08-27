@@ -1,139 +1,234 @@
 # Releasing divsel 0.1.0 — the remaining (user-run) steps
 
-Everything buildable was built and verified locally (see "Verification log" below).
-What remains is exactly the outward-facing actions: pushing, publishing, and the
-one-time PyPI/GitHub configuration. Run these **in order**.
+Everything that could be done without a registry credential has been done. What
+remains is the credentialed and outward-facing part: publishing to two
+registries, one manual PyPI configuration, the tag, and the GitHub Release.
+Run the steps **in order**.
 
-## 1. Merge and flip the repository to public
+## State of the tree (verified 2026-08-27)
 
-**The repository already exists and is already pushed.** `git remote -v` in this
-checkout is <https://github.com/Redrum624/divsel.git>, created 2026-08-21 and
-**private**; `feat/v0.1` and `main` are both pushed
-(`.git/logs/refs/remotes/origin/feat/v0.1` records nine `update by push`
-entries, the last at f7027c8 on 2026-08-25). So `gh repo create` is not the
-step — it fails with "Name already exists on this account". Merge and push:
+| Fact | Command that proves it | Value |
+|---|---|---|
+| Repository visibility | `gh repo view Redrum624/divsel --json visibility` | **PUBLIC** (`isPrivate: false`) |
+| Branch sync | `git rev-list --left-right --count origin/main...HEAD` | `0 0` — `main` == `origin/main` == `2cb9eae` |
+| `feat/v0.1` | `git rev-list --left-right --count origin/feat/v0.1...main` | `0 6` — fully merged; `main` is the release branch |
+| Working tree | `git status --porcelain` | clean |
+| CI on this tree | run **33020266950** (`checks`), 2026-08-26T22:37:19Z, head `2cb9eae` | **success**, 17 jobs |
+| `install-matrix` | run **33009873968**, 2026-08-26T20:20:09Z, head `9262375` | **success** — `2cb9eae` touched only `PROGRESS.md`, which the workflow's `paths:` filter excludes |
+| Tags | `gh api repos/Redrum624/divsel/tags` → `[]`; `git tag -l` → empty | **none yet** |
+| `release` environment | `gh api repos/Redrum624/divsel/environments` | exists, id `20688404160`, created 2026-08-27 |
 
-```
-git checkout main
-git merge --ff-only feat/v0.1     # falls back: git merge --no-ff feat/v0.1
-git push
-gh repo edit Redrum624/divsel --visibility public --accept-visibility-change-consequences
-```
+There is **no** step here for creating the repo, pushing `main`, or flipping
+visibility. All three are already done — `gh repo edit --visibility public` in
+particular would now be a no-op, and it used to be step 1 of this document.
 
-> Note: taking the repo public was your earlier decision (private until release);
-> the `gh repo edit` line above is that flip. Staying private costs nothing here:
-> the **`simd parity (aarch64)`** job — the only one in `ci.yml` asking for a
-> hosted arm64 runner (`runs-on: ubuntu-24.04-arm`), and the sole gate for the
-> aarch64 half of the R-G22 bit-identity promise — has already run green in this
-> private repository (run 32901377186, 2026-08-25), which is what GitHub's
-> 2026-01-29 change made possible
-> (<https://github.blog/changelog/2026-01-29-arm64-standard-runners-are-now-available-in-private-repositories/>,
-> checked 2026-08-25).
->
-> **What CI has and has not proved.** `checks` has run three times, all green,
-> most recently 2026-08-25 on the tree at f7027c8 — 14 jobs each: `rust`,
-> `simd parity (aarch64)` and the 12 python cells. `install-matrix` has run five
-> times, all green (see `docs/benchmarks/README.md`). What is unproven is
-> **this** tree: `git rev-list --left-right --count origin/feat/v0.1...HEAD`
-> reports `0 18`, so the 18 commits since that push — including the `golden`
-> conformance job, the `cargo doc` and LICENSE gates, the bench-target guard and
-> the MSRV check on `divsel-py` — have never been through a runner. Push before
-> tagging, and read the run before you tag. `release.yml` has never run at all:
-> nothing has triggered it, because nothing has been tagged.
+> **`release.yml` has run — three times, and all three failed.** Not on a tag:
+> on plain pushes to `main`, back when the generated workflow was still named
+> `CI` and still carried the generator's `on: push` triggers. Runs
+> **32927028215** (`c95a128`), **32927043835** (`9455df0`) and **32964560023**
+> (`99395cd`), all `conclusion: failure`, all `event: push`,
+> all `path: .github/workflows/release.yml`. In each the wheel jobs failed or
+> were cancelled and the `Release` job was **skipped**, so nothing was ever
+> uploaded anywhere — but do not read "the workflow has never run" anywhere and
+> believe it. `dccf354` is the commit that narrowed the triggers to tags +
+> `workflow_dispatch`; see the hand-edit list at the bottom of this file.
 
-## 2. Publish the crate
+## 1. Re-run the local gates at the commit you are tagging
+
+These are not optional and they are not covered by CI. Re-run them **at the exact
+commit you tag** — the last full pass is in the verification log below.
 
 ```
-cargo login          # paste a crates.io token with publish-new scope (0.1.1 and later need publish-update)
+cargo test --workspace
+cargo clippy --workspace --all-targets --all-features -- -D warnings
+cargo fmt --all --check
+RUSTDOCFLAGS="-D warnings" cargo doc --no-deps
+cargo test -p divsel --benches      # must print "is a benchmark, not a test", not run fixtures
+python python/tools/gen_golden.py --check
+python -m pytest python/tests -q    # in .venv and in .venv-adapters
+cargo publish -p divsel --dry-run
+```
+
+Then rebuild the wheels, because the ones in `wheels/` are **stale**: the newest
+is `divsel-0.1.0.tar.gz` at 2026-08-22 14:18:51, and `git log --since` counts
+**46 commits** on `main` after that timestamp. A build artifact is never evidence
+about a later commit.
+
+```
+python -m maturin build --release -o wheels
+python -m maturin sdist -o wheels
+```
+
+Check `git log <sha>..HEAD` before reusing **any** dated entry in this file.
+
+## 2. Confirm the CHANGELOG date
+
+`CHANGELOG.md`'s heading reads `## [0.1.0] - 2026-08-27`. If you tag on a later
+date, change it and amend before tagging — the released section must carry the
+release date.
+
+## 3. Publish the crate
+
+```
+cargo login          # a crates.io token with publish-new scope (0.1.1 and later need publish-update)
 cargo publish -p divsel
 ```
 
-This publishes **0.1.0** directly (skip any 0.0.1 squat — the `divsel` name was
-verified free on 2026-08-21). `cargo publish -p divsel --dry-run` already passes
-locally, including the `categories`/`keywords` validation.
+This publishes **0.1.0** directly; there is no 0.0.1 squat on crates.io to skip.
+The name is free — see "Registry name availability" below, and re-check it
+immediately before you run this. `cargo publish -p divsel --dry-run` passes
+locally (18 files, 376.3 KiB / 107.1 KiB compressed), including the
+`categories`/`keywords` slug validation.
 
-## 3. Configure PyPI Trusted Publishing + the GitHub environment
+**Irreversible.** crates.io has no unpublish; a bad 0.1.0 can only be yanked,
+and the version number can never be reused.
 
-- On PyPI (https://pypi.org/manage/account/publishing/): add a **pending publisher**
-  for a new project `divsel`: owner `Redrum624`, repository `divsel`, workflow
-  `release.yml`, environment `release`.
-- On GitHub (repo Settings → Environments): create an environment named **`release`**
-  (optionally add yourself as required reviewer — that gates every PyPI upload).
+## 4. Configure PyPI Trusted Publishing
 
-No token is stored anywhere: `release.yml` publishes with
-`uv publish --trusted-publishing always` via OIDC (`permissions: id-token: write`).
+The GitHub half is **already done** (step 5 below explains what was created).
+The PyPI half is manual and cannot be scripted without a PyPI token:
 
-## 4. Tag and push
+- <https://pypi.org/manage/account/publishing/> → add a **pending publisher** for
+  a new project `divsel`:
+  - PyPI project name: `divsel`
+  - Owner: `Redrum624`
+  - Repository: `divsel`
+  - Workflow: `release.yml`
+  - Environment: `release`
+
+The environment name must match `[tool.maturin.generate-ci.github]
+publishing-environment = "release"` in `pyproject.toml` and `environment:
+release` at `.github/workflows/release.yml:217`. No token is stored anywhere:
+`release.yml` publishes with `uv publish --trusted-publishing always` over OIDC
+(`permissions: id-token: write`).
+
+## 5. The `release` environment — already created, and what it will do to you
+
+Created 2026-08-27 (`gh api --method PUT repos/Redrum624/divsel/environments/release`),
+id `20688404160`, with two protection rules **deliberately** enabled:
+
+- **Required reviewer: `Redrum624`** (`prevent_self_review: false`). The
+  `Release` job — the only job that touches PyPI — will sit in
+  `waiting` until it is approved. You approve your own deployment in one click
+  from the run page. On a public repo with `on: push: tags: '*'`, where *any*
+  tag starts a six-target wheel matrix and an irreversible upload, one click is
+  the cheapest possible interlock. Without it there is nothing at all between a
+  mistyped `git push --tags` and a permanent PyPI release.
+- **Deployment branch/tag policy: `v*` only** (`custom_branch_policies: true`).
+  A tag that does not match `v*` builds wheels but cannot reach the `Release`
+  job.
+
+If you decide you want neither, remove them consciously — a release environment
+with no gate on a public repo is a choice, not a default.
+
+## 6. Tag and push
 
 ```
 git tag -a v0.1.0 -m "divsel 0.1.0"
 git push --follow-tags
 ```
 
-The tag triggers `release.yml`: wheels for linux/windows/macos × (x86_64|x64, aarch64)
-plus the free-threaded `cp314t` wheels and the sdist are built, attested, and published
-to PyPI from the `release` environment.
+The tag is the **only** trigger for the wheel matrix. It builds linux/windows/macos
+× (x86_64|x64, aarch64), plus the free-threaded `cp314t` wheels and the sdist,
+attests them, and publishes to PyPI from the `release` environment.
 
-## 5. Verify the published package
+Then **go and approve the deployment** (step 5). The run will not finish on its
+own.
 
-On a clean Windows machine (or any machine that took no part in the build):
+## 7. Verify the published package
+
+On a clean Windows machine, or any machine that took no part in the build:
 
 ```
 py -3.14 -m pip install divsel
 py -3.14 -c "import divsel, numpy as np; print(divsel.gist_select(np.random.default_rng(0).standard_normal((50,8),dtype=np.float32), k=5))"
 ```
 
-Also check the PyPI project page renders the README.
+Also check the PyPI project page renders the README, and that the Homepage /
+Source / Changelog / Issues links from `[project.urls]` are present.
 
-## 6. GitHub Release
+## 8. GitHub Release
 
 Create release `v0.1.0` from the tag. Body: the `CHANGELOG.md` 0.1.0 section, the
-benchmark tables from `docs/benchmarks/README.md` (comparison + Windows installability),
-and the installability matrix artifact from the `install-matrix.yml` run.
+benchmark tables from `docs/benchmarks/README.md` (comparison + Windows
+installability), and the installability matrix artifact from the
+`install-matrix.yml` run.
 
-## 7. Post-release
+## 9. Post-release
 
-Re-run `.github/workflows/install-matrix.yml` (workflow_dispatch) against the release tag so
-the matrix reflects the published wheel rather than a `pip install .` of the checkout, and
-refresh the assembled table in `docs/benchmarks/README.md`. All 48 cells are already measured
-for the branch; this re-run is about the published artifact, not about filling gaps.
+Re-run `.github/workflows/install-matrix.yml` (`workflow_dispatch`) against the
+release tag, so the matrix reflects the published wheel rather than a
+`pip install .` of the checkout, and refresh the assembled table in
+`docs/benchmarks/README.md`. All 48 cells are already measured for the branch;
+this re-run is about the published artifact, not about filling gaps.
+
+Then retire the pre-publish wording, which is wrong the moment step 3 succeeds:
+
+- `README.md:5` — `Status: **0.1.0 — release candidate; publish pending.**`
+- `README.md:6` — the pointer to this file as "the crates.io / PyPI publish steps"
+- `README.md:16` — the "Until 0.1.0 lands on PyPI/crates.io, install from a
+  checkout instead" install fallback
+
+---
+
+## Registry name availability
+
+`divsel` is unclaimed on both registries. Checked **2026-08-27**:
+
+| Registry | Request | Response |
+|---|---|---|
+| crates.io | `curl https://crates.io/api/v1/crates/divsel` | HTTP 404, `{"errors":[{"detail":"crate \`divsel\` does not exist"}]}` |
+| PyPI | `curl -o /dev/null -w "%{http_code}" https://pypi.org/pypi/divsel/json` | HTTP 404 |
+
+**Availability is not permanent and this is not a reservation.** `README.md`,
+`docs/CONFORMANCE.md` and the `CHANGELOG.md` 0.1.0 section all already write the
+name as if it were ours. Re-run both requests immediately before step 3; if
+either returns 200, stop — a rename touches the crate name in
+`crates/divsel/Cargo.toml`, `name` in `pyproject.toml`, the Python package under
+`python/`, and every one of those documents, and none of it can be done after a
+publish.
 
 ---
 
 ## Verification log
 
-> **The entries below are dated and pinned to a commit. They are evidence for
-> *that* tree, not for whatever HEAD is now.** Anything built from source —
-> everything under `wheels/` in particular — is a build artifact, never proof
-> about a later commit: check `git log <sha>..HEAD` before reusing an entry, and
-> re-run the local gates the entries below list — the test suites, clippy, fmt,
-> `cargo doc`, `gen_golden.py --check`, `cargo test -p divsel --benches`
-> (the bench target's own guard: it must print "is a benchmark, not a test"
-> rather than run a fixture), `cargo publish -p divsel --dry-run` and
-> the wheel builds/installs — at the commit you are actually tagging. (Steps 1-7
-> are the outward-facing actions; they are not the verification.) As of the last update
-> to this file the wheels in `wheels/` were built on 2026-08-22 at 14:11-14:18
-> and are **older than** the golden fixture, `docs/CONFORMANCE.md`, the cleanup
-> wave and the final-review fixes, so they do not describe HEAD.
+> **Every entry below is dated and pinned to a commit. It is evidence for *that*
+> tree and for nothing later.** Anything built from source — everything under
+> `wheels/` in particular — is a build artifact, never proof about a later
+> commit. Before reusing an entry, run `git log <sha>..HEAD`; if it prints
+> anything, re-run the step-1 gates at the commit you are actually tagging.
 
-### 2026-08-22, Windows 11 x64, at the 0.1.0 tree of that date
+### 2026-08-27, Windows 11 x64, at `2cb9eae` (`main`, current HEAD)
 
-- `cargo test` (workspace), `cargo clippy --all-targets --all-features -- -D warnings`,
-  `cargo fmt --check`, `RUSTDOCFLAGS="-D warnings" cargo doc --no-deps`: green.
-- `cargo publish -p divsel --dry-run`: green (packaging + categories/keywords slugs).
-- `python -m maturin build --release -o wheels` → `divsel-0.1.0-cp311-abi3-win_amd64.whl`;
-  `python -m maturin sdist -o wheels` → `divsel-0.1.0.tar.gz`.
-- The one abi3 wheel installed into fresh `uv` venvs for CPython 3.11, 3.12, 3.13 and
-  3.14 (GIL); the smoke selection ran identically in all four.
-- Free-threaded CPython 3.14t: the abi3 wheel is (correctly) refused; the
-  version-specific `divsel-0.1.0-cp314-cp314t-win_amd64.whl` was built and smoke-tested
-  in a 3.14t venv.
-- `.github/workflows/ci.yml` and the generated `release.yml` parse as valid YAML;
-  `release.yml` was verified to publish via trusted publishing with **no token env**,
-  and to contain exactly the intended target matrix + the `python3.14t` build steps.
+Local, on this machine:
 
-What could **not** be verified locally: Linux/macOS wheel builds (CI-only), the actual
-PyPI/crates.io uploads, and the Trusted Publishing round-trip — that is what steps 1–7 close.
+- `cargo test --workspace`: **134 passed, 0 failed** — 117 lib + 5 `exact_oracle`
+  + 5 `golden` + 3 `shared_fixture` + 4 doc-tests.
+- `cargo clippy --workspace --all-targets --all-features -- -D warnings`: clean.
+- `cargo fmt --all --check`: clean (exit 0).
+- `RUSTDOCFLAGS="-D warnings" cargo doc --no-deps`: clean.
+- `cargo test -p divsel --benches`: printed `benches/gist.rs is a benchmark, not
+  a test: skipping the run` — the guard held.
+- `python python/tools/gen_golden.py --check`: byte-identical, 19365 bytes.
+- `pytest python/tests -q` in `.venv` (CPython 3.14.2, GIL): **155 passed, 74
+  skipped**. In `.venv-adapters` (3.14.2 + langchain-core + llama-index-core):
+  **227 passed, 2 skipped** — the adapter tests that the base venv skips.
+- `cargo publish -p divsel --dry-run`: green. `Packaged 18 files, 376.3KiB
+  (107.1KiB compressed)`, verify step compiled, upload aborted for the dry run.
+- Registry name check: both 404 (see above).
+
+On CI, same tree:
+
+- `checks` run **33020266950**, 2026-08-26T22:37:19Z, head `2cb9eae`: success,
+  17 jobs — `rust (fmt, clippy, test, MSRV check)`, `simd parity (aarch64)`,
+  `golden conformance (rust reader)` × 3 OSes, and 12 python cells including
+  `python 3.12 / ubuntu-latest + adapters`.
+- `install-matrix` run **33009873968**, head `9262375`: success. Not re-run at
+  `2cb9eae` because that commit touches only `PROGRESS.md`.
+
+**Not** verified at this commit: the per-interpreter wheel installs (3.11–3.14
+and 3.14t) and the wheel/sdist builds themselves. The artifacts in `wheels/` are
+from 2026-08-22 and do not describe this tree. Rebuild them in step 1.
 
 ### 2026-08-25, Windows 11 x64, final-review fixes
 
@@ -149,22 +244,59 @@ PyPI/crates.io uploads, and the Trusted Publishing round-trip — that is what s
   workspace root, which `cargo package` cannot reach).
 - `python -m maturin sdist`: the sdist now carries `test-assets/golden-selection.json`
   and `python/tests/**`, so both readers run from an unpacked source distribution.
-- **Not** re-run at this commit: the per-interpreter wheel installs (3.11-3.14 and
-  3.14t) and `cargo publish -p divsel --dry-run`. Neither belongs to a numbered
-  step — they are the local gates from the 2026-08-22 entry above, and they have
-  to be re-run at the commit you tag: the dry-run before **step 2** (publish the
-  crate), the wheel builds and installs before **step 4** (tag and push, which is
-  what builds the real wheels). **Step 5** then repeats the install against the
-  published wheel, and **step 3** is the one-time PyPI/GitHub configuration,
-  which verifies nothing.
 
-## Regenerating release.yml
+### 2026-08-22, Windows 11 x64, at the 0.1.0 tree of that date
 
-`release.yml` is generated — never hand-edit it:
+- `cargo test` (workspace), `cargo clippy --all-targets --all-features -- -D warnings`,
+  `cargo fmt --check`, `RUSTDOCFLAGS="-D warnings" cargo doc --no-deps`: green.
+- `cargo publish -p divsel --dry-run`: green (packaging + categories/keywords slugs).
+- `python -m maturin build --release -o wheels` → `divsel-0.1.0-cp311-abi3-win_amd64.whl`;
+  `python -m maturin sdist -o wheels` → `divsel-0.1.0.tar.gz`.
+- The one abi3 wheel installed into fresh `uv` venvs for CPython 3.11, 3.12, 3.13 and
+  3.14 (GIL); the smoke selection ran identically in all four.
+- Free-threaded CPython 3.14t: the abi3 wheel is (correctly) refused; the
+  version-specific `divsel-0.1.0-cp314-cp314t-win_amd64.whl` was built and smoke-tested
+  in a 3.14t venv.
+- `.github/workflows/ci.yml` and `release.yml` parse as valid YAML; `release.yml`
+  publishes via trusted publishing with **no token env**, and contains exactly the
+  intended target matrix plus the `python3.14t` build steps.
+
+**These wheel and sdist results are the ones that have not been reproduced
+since.** They are the reason step 1 tells you to rebuild.
+
+What could **not** be verified locally at any date: Linux/macOS wheel builds
+(CI-only), the actual PyPI/crates.io uploads, and the Trusted Publishing
+round-trip. Those are what steps 3–7 close.
+
+---
+
+## Regenerating release.yml — and the three hand edits you must re-apply
+
+`release.yml` is generated by maturin:
 
 ```
 python -m maturin generate-ci github -o .github/workflows/release.yml
 ```
 
-Configuration lives in `[tool.maturin.generate-ci.github]` in `pyproject.toml`.
-Regeneration **clobbers** the extra header comment (verified) — re-add it after.
+Configuration lives in `[tool.maturin.generate-ci.github]` in `pyproject.toml`,
+and regeneration **rewrites the whole file**. Prefer editing the TOML.
+
+But the file is **not** purely generated, and the difference is
+release-breaking. `.github/workflows/release.yml:13-23` lists three local
+changes the generator has no configuration key for. Regeneration silently
+discards all three; **re-apply them every time**, and diff the result before
+committing:
+
+1. **`name: release`**, not the generator's `name: CI` — which collided with
+   `ci.yml`.
+2. **`on:` is tags + `workflow_dispatch` only.** The generator also fires this
+   on every push to `main`/`master` and on every pull request, building the full
+   six-target wheel matrix — two of them macOS, billed at 10× — for changes that
+   are not releases. That is what produced the three failed `release.yml` runs
+   noted at the top of this file, and together with the other two workflows it
+   exhausted a 2,000-minute monthly allowance in about four pushes.
+3. **`concurrency:`** cancels a superseded run of the same ref.
+
+The explanatory header comment (`release.yml:7-23`) is itself clobbered by
+regeneration — re-add it too, since it is what tells the next person these three
+edits exist.
