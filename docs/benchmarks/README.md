@@ -26,7 +26,7 @@ Two things are measured:
 | Pythons (installability) | 3.11.9, 3.12.11 (uv-managed), 3.13.11, 3.14.2 -- see the matrix for the interpreter paths |
 | numpy / scipy / numba / psutil | 2.5.2 / 1.18.1 / 0.67.0 / 7.2.2 (in `.venv-3.14`) |
 | uv / git | uv 0.11.26, git 2.55.0.windows.4 |
-| divsel | 0.0.1, wheel `divsel-0.0.1-cp311-abi3-win_amd64.whl` built from git `d379953` with `python -m maturin build --release -o wheels` (sha256 `5d7a9578c7bf…248c0`). The released version is **0.1.0**, and it is **not** this binary: `git log d379953..` counts 15 commits touching `crates/`, and while most are tests and documentation, some are not — `FacilityLocation::marginal`/`commit` gained an unconditional `assert_eq!` on the cache length (one extra check per marginal evaluation, i.e. `O(n·k·|D|)` of them in exactly the `gist/facility_location` cells below), `gist` gained an `eps >= f32::EPSILON` floor and `div()` a per-call range scan. Read the wall-clock numbers below as the numbers of the `d379953` core, not of 0.1.0; re-running the commands in this file against the released wheel is what would make them 0.1.0's. |
+| divsel | 0.0.1, wheel `divsel-0.0.1-cp311-abi3-win_amd64.whl` built from git `3f4978d` with `python -m maturin build --release -o wheels` (sha256 `5d7a9578c7bf…248c0`). The released version is **0.1.0**, and it is **not** this binary: `git log 3f4978d..` counts 15 commits touching `crates/`, and while most are tests and documentation, some are not — `FacilityLocation::marginal`/`commit` gained an unconditional `assert_eq!` on the cache length (one extra check per marginal evaluation, i.e. `O(n·k·|D|)` of them in exactly the `gist/facility_location` cells below), `gist` gained an `eps >= f32::EPSILON` floor and `div()` a per-call range scan. Read the wall-clock numbers below as the numbers of the `3f4978d` core, not of 0.1.0; re-running the commands in this file against the released wheel is what would make them 0.1.0's. |
 | gist-select | 0.1.0 from PyPI (`gist_select-0.1.0-py3-none-any.whl`, uploaded 2026-02-19, sha256 `12267b8cc544239d…`); the GitHub repository `kclaka/gist-select` is at `f6281f3611c1881b613ec6d8de22459ff89f161a` (its only commit, 2026-02-19) |
 | gist-sampling | 0.1.0 from `git+https://github.com/musubi-labs/gist-sampling` at `ab97eb5acc619ec1527acac91accee8c9dfa0b8d` (HEAD on 2026-08-22); pulls numba 0.67.0, llvmlite 0.49.0, scikit-learn 1.9.0, pandas 3.0.5 |
 | submodlib-py | 0.0.3 on PyPI (uploaded 2025-05-14); see the matrix -- it does not install here |
@@ -101,7 +101,7 @@ The YAML was checked with `python -c "import yaml; yaml.safe_load(open('.github/
 and the cell script + assembler were exercised locally on two real cells (see the pip cross-check above).
 
 The workflow has since run on CI: five runs, all green, the latest being run 32901377367 (2026-08-25,
-branch `feat/v0.1`, tree f7027c8), whose `install-matrix` artifact holds 48 records -- 4 libraries x 3
+branch `feat/v0.1`, tree 68430d4), whose `install-matrix` artifact holds 48 records -- 4 libraries x 3
 OSes x CPython 3.11-3.14. Read from that artifact:
 
 | library | Linux | Windows | macOS |
@@ -307,7 +307,7 @@ reported as `not run`. The n = 1M fixture is 1.5 GiB (dim 384) / 3 GiB (dim 768)
 
 ## Kernel and end-to-end numbers from the Rust benches (criterion)
 
-From `task-6-report.md` § "Fix round 1", commit `7ece44e`, `cargo bench -p divsel` (the DEFAULT tier,
+From `task-6-report.md` § "Fix round 1", commit `1b2789e`, `cargo bench -p divsel` (the DEFAULT tier,
 253 s end to end), 2026-08-21, same machine and toolchain as above. The header of
 `crates/divsel/benches/gist.rs` carries the same numbers and the tier table.
 

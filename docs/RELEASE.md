@@ -13,14 +13,14 @@ Run the steps **in order**.
 | Branch sync | `git rev-list --left-right --count origin/main...HEAD` | **run it.** Left must be `0` — anything behind means fetch and rebase before tagging. Right is however many local commits you have not pushed yet, and is expected to be non-zero while this document is being edited. |
 | `feat/v0.1` | `git rev-list --left-right --count origin/feat/v0.1...main` | **run it.** Left must be `0` — that is what "fully merged into `main`" means. The right-hand count only grows and carries no information. |
 | Working tree | `git status --porcelain` | clean |
-| CI on this tree | run **33020266950** (`checks`), 2026-08-26T22:37:19Z, head `2cb9eae` | **success**, 17 jobs |
-| `install-matrix` | run **33009873968**, 2026-08-26T20:20:09Z, head `9262375` | **success** — `2cb9eae` touched only `PROGRESS.md`, which the workflow's `paths:` filter excludes |
+| CI on this tree | run **33020266950** (`checks`), 2026-08-26T22:37:19Z, head `60159b8` | **success**, 17 jobs |
+| `install-matrix` | run **33009873968**, 2026-08-26T20:20:09Z, head `02c546f` | **success** — `60159b8` touched only `PROGRESS.md`, which the workflow's `paths:` filter excludes |
 | Tags | `gh api repos/Redrum624/divsel/tags` → `[]`; `git tag -l` → empty | **none yet** |
 | `release` environment | `gh api repos/Redrum624/divsel/environments` | exists, id `20688404160`, created 2026-08-27 |
 
 Two rows above say "run it" rather than carrying a number. That is deliberate,
 and it is the second time this document has been wrong the same way. The
-previous version asserted `0 0 — main == origin/main == 2cb9eae` as the first
+previous version asserted `0 0 — main == origin/main == 60159b8` as the first
 thing a tagger reads; it was already `0 2` when it was committed, because
 writing this document created commits of its own. A snapshot of a count that
 changes every time you touch the repo is a claim with a shelf life measured in
@@ -35,12 +35,12 @@ particular would now be a no-op, and it used to be step 1 of this document.
 > **`release.yml` has run — three times, and all three failed.** Not on a tag:
 > on plain pushes to `main`, back when the generated workflow was still named
 > `CI` and still carried the generator's `on: push` triggers. Runs
-> **32927028215** (`c95a128`), **32927043835** (`9455df0`) and **32964560023**
-> (`99395cd`), all `conclusion: failure`, all `event: push`,
+> **32927028215** (`84b61fd`), **32927043835** (`aa53ba0`) and **32964560023**
+> (`11c4437`), all `conclusion: failure`, all `event: push`,
 > all `path: .github/workflows/release.yml`. In each the wheel jobs failed or
 > were cancelled and the `Release` job was **skipped**, so nothing was ever
 > uploaded anywhere — but do not read "the workflow has never run" anywhere and
-> believe it. `dccf354` is the commit that narrowed the triggers to tags +
+> believe it. `20e2b19` is the commit that narrowed the triggers to tags +
 > `workflow_dispatch`; see the hand-edit list at the bottom of this file.
 
 ## 1. Re-run the local gates at the commit you are tagging
@@ -209,7 +209,7 @@ publish.
 > commit. Before reusing an entry, run `git log <sha>..HEAD`; if it prints
 > anything, re-run the step-1 gates at the commit you are actually tagging.
 
-### 2026-08-27, Windows 11 x64, at `2cb9eae` (`main`, current HEAD)
+### 2026-08-27, Windows 11 x64, at `60159b8` (`main`, current HEAD)
 
 Local, on this machine:
 
@@ -230,12 +230,12 @@ Local, on this machine:
 
 On CI, same tree:
 
-- `checks` run **33020266950**, 2026-08-26T22:37:19Z, head `2cb9eae`: success,
+- `checks` run **33020266950**, 2026-08-26T22:37:19Z, head `60159b8`: success,
   17 jobs — `rust (fmt, clippy, test, MSRV check)`, `simd parity (aarch64)`,
   `golden conformance (rust reader)` × 3 OSes, and 12 python cells including
   `python 3.12 / ubuntu-latest + adapters`.
-- `install-matrix` run **33009873968**, head `9262375`: success. Not re-run at
-  `2cb9eae` because that commit touches only `PROGRESS.md`.
+- `install-matrix` run **33009873968**, head `02c546f`: success. Not re-run at
+  `60159b8` because that commit touches only `PROGRESS.md`.
 
 **Not** verified at this commit: the per-interpreter wheel installs (3.11–3.14
 and 3.14t) and the wheel/sdist builds themselves. The artifacts in `wheels/` are
