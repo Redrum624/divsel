@@ -10,13 +10,23 @@ Run the steps **in order**.
 | Fact | Command that proves it | Value |
 |---|---|---|
 | Repository visibility | `gh repo view Redrum624/divsel --json visibility` | **PUBLIC** (`isPrivate: false`) |
-| Branch sync | `git rev-list --left-right --count origin/main...HEAD` | `0 0` — `main` == `origin/main` == `2cb9eae` |
-| `feat/v0.1` | `git rev-list --left-right --count origin/feat/v0.1...main` | `0 6` — fully merged; `main` is the release branch |
+| Branch sync | `git rev-list --left-right --count origin/main...HEAD` | **run it.** Left must be `0` — anything behind means fetch and rebase before tagging. Right is however many local commits you have not pushed yet, and is expected to be non-zero while this document is being edited. |
+| `feat/v0.1` | `git rev-list --left-right --count origin/feat/v0.1...main` | **run it.** Left must be `0` — that is what "fully merged into `main`" means. The right-hand count only grows and carries no information. |
 | Working tree | `git status --porcelain` | clean |
 | CI on this tree | run **33020266950** (`checks`), 2026-08-26T22:37:19Z, head `2cb9eae` | **success**, 17 jobs |
 | `install-matrix` | run **33009873968**, 2026-08-26T20:20:09Z, head `9262375` | **success** — `2cb9eae` touched only `PROGRESS.md`, which the workflow's `paths:` filter excludes |
 | Tags | `gh api repos/Redrum624/divsel/tags` → `[]`; `git tag -l` → empty | **none yet** |
 | `release` environment | `gh api repos/Redrum624/divsel/environments` | exists, id `20688404160`, created 2026-08-27 |
+
+Two rows above say "run it" rather than carrying a number. That is deliberate,
+and it is the second time this document has been wrong the same way. The
+previous version asserted `0 0 — main == origin/main == 2cb9eae` as the first
+thing a tagger reads; it was already `0 2` when it was committed, because
+writing this document created commits of its own. A snapshot of a count that
+changes every time you touch the repo is a claim with a shelf life measured in
+minutes, and the fix is not a fresher number — it is a criterion. The rows that
+*do* carry values below are ones that change only when someone deliberately
+changes them.
 
 There is **no** step here for creating the repo, pushing `main`, or flipping
 visibility. All three are already done — `gh repo edit --visibility public` in
@@ -50,9 +60,10 @@ cargo publish -p divsel --dry-run
 ```
 
 Then rebuild the wheels, because the ones in `wheels/` are **stale**: the newest
-is `divsel-0.1.0.tar.gz` at 2026-08-22 14:18:51, and `git log --since` counts
-**46 commits** on `main` after that timestamp. A build artifact is never evidence
-about a later commit.
+is `divsel-0.1.0.tar.gz` at 2026-08-22 14:18:51. Count what has landed since with
+`git log --oneline --since="2026-08-22 14:18:51" | wc -l` — it was 49 on
+2026-08-27 and only grows. A build artifact is never evidence about a later
+commit, so the count matters only in that it is not zero; rebuild regardless.
 
 ```
 python -m maturin build --release -o wheels
