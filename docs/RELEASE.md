@@ -1,5 +1,16 @@
 # Releasing divsel 0.1.0 — the remaining (user-run) steps
 
+> **Done 2026-09-03.** Tag `v0.1.0` = `5860457`. PyPI: release run
+> [33782944986](https://github.com/Redrum624/divsel/actions/runs/33782944986) built 12 wheels + the sdist
+> and published them over trusted publishing after the owner approved the `release` deployment (the first
+> attempt failed with `invalid-publisher` because the pending publisher had not been registered yet; the
+> Release job was re-run alone once it was). crates.io: `cargo publish -p divsel` by the owner at
+> 17:41:56Z; the published `.crate` (sha256 `ebbff30c…`) is byte-identical to `cargo package` at `5860457`.
+> GitHub Release v0.1.0 carries all 13 files plus the installability matrix; `install-matrix.yml` re-ran
+> green against the tag ([33785213423](https://github.com/Redrum624/divsel/actions/runs/33785213423)).
+> Still open from step 8 + step 9: configure crates.io Trusted Publishing for 0.1.1+, revoke the
+> `publish-new` token, refresh the assembled table in `docs/benchmarks/README.md` from that re-run.
+
 Everything that could be done without a registry credential has been done. What
 remains is the credentialed and outward-facing part: publishing to two
 registries, one manual PyPI configuration, the tag, and the GitHub Release.
