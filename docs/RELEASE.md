@@ -11,8 +11,9 @@
 > but its 12 divsel cells still installed `spec: "."` (the checkout), so it does **not** yet measure the
 > published wheel; the workflow needs a `divsel==0.1.0` spec for that. Still open from step 8 + step 9:
 > revoke the `publish-new` token (crates.io Trusted Publishing was configured 2026-09-03 and the
-> `crates` job now uses it), point the matrix at
-> the PyPI wheel and refresh the assembled table in `docs/benchmarks/README.md`.
+> `crates` job now uses it), the matrix was re-run against
+> `divsel==0.1.0` (run 33789059581: 48/48 recorded, divsel 12/12 with no toolchain on the runner) and
+> `docs/benchmarks/README.md` refreshed from its artifact. Nothing from step 9 remains open.
 
 Everything that could be done without a registry credential has been done. What
 remains is the credentialed and outward-facing part: publishing to two

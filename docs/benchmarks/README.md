@@ -95,14 +95,20 @@ and it is why the 3.14 column above was re-created from the GIL interpreter expl
 and `macos-latest` × Python 3.11/3.12/3.13/3.14 with `pip` in a fresh `python -m venv` per library
 (`.github/scripts/install_cell.sh`), each as a `continue-on-error` step that writes an ok/fail JSON record
 with pip's output tail; the `assemble` job merges them into `docs/benchmarks/install-matrix.json` and prints
-the table into the job summary (`.github/scripts/assemble_matrix.py`). The divsel cell is `pip install .`
-on the checkout, so it needs the Rust toolchain the workflow installs with `dtolnay/rust-toolchain@stable`.
+the table into the job summary (`.github/scripts/assemble_matrix.py`). On push and pull_request the divsel
+cell is `pip install .` on the checkout, so it needs the Rust toolchain the workflow installs with
+`dtolnay/rust-toolchain@stable`; a manual run can set `divsel_spec` (e.g. `divsel==0.1.0`) to install the
+published wheels instead, and the toolchain is then deliberately not installed.
 The YAML was checked with `python -c "import yaml; yaml.safe_load(open('.github/workflows/install-matrix.yml'))"`
 and the cell script + assembler were exercised locally on two real cells (see the pip cross-check above).
 
-The workflow has since run on CI: five runs, all green, the latest being run 32901377367 (2026-08-25,
-branch `feat/v0.1`, tree 68430d4), whose `install-matrix` artifact holds 48 records -- 4 libraries x 3
-OSes x CPython 3.11-3.14. Read from that artifact:
+The table below is read from the `install-matrix` artifact of run 33789059581 (2026-09-03, `main` at ae10a8e, dispatched with `divsel_spec=divsel==0.1.0` on the day 0.1.0
+was published; the artifact is attached to the v0.1.0 GitHub Release as `install-matrix-2026-09-03.json`,
+since `docs/benchmarks/install-matrix.json` is gitignored by design): 48 records -- 4
+libraries x 3 OSes x CPython 3.11-3.14. The divsel cells installed the published wheels from PyPI with
+**no Rust toolchain on the runner** (the toolchain step was skipped in all 12 cells), so 4/4 per OS means
+the abi3 wheel covered every interpreter without compiling. Before that, five runs on the checkout
+(`pip install .`) were all green, the latest 32901377367 (2026-08-25, `feat/v0.1`, tree 68430d4).
 
 | library | Linux | Windows | macOS |
 |---|---|---|---|
@@ -112,8 +118,7 @@ OSes x CPython 3.11-3.14. Read from that artifact:
 | submodlib-py | 2/4 ok | 0/4 ok | 2/4 ok |
 
 The per-cell pip output lives in the run's job summary and its `install-cell-*` artifacts; it is not
-transcribed here. Note the tree measured is 18 commits behind this one, and no run has covered the
-current `.github/` (see `docs/RELEASE.md`).
+transcribed here.
 
 ## Comparison against the incumbents
 
