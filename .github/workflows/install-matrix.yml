@@ -5,6 +5,10 @@ name: install-matrix
 # (with pip's output tail); the `assemble` job merges the records into
 # docs/benchmarks/install-matrix.json and prints the table into the job summary. Nothing here is
 # asserted -- a failing install is a measurement, not a failing build.
+#
+# On push and pull_request the divsel cell is `pip install .` of the checkout. A manual run may
+# set `divsel_spec` (e.g. `divsel==0.1.0`) to measure the published wheels instead; the Rust
+# toolchain is then deliberately not installed, so a cell only passes if a wheel covers it.
 
 on:
   push:
@@ -19,6 +23,14 @@ on:
       - "python/**"
   pull_request:
   workflow_dispatch:
+    inputs:
+      divsel_spec:
+        description: >-
+          What the divsel cell installs. "." builds this checkout with maturin (needs the Rust
+          toolchain, which is installed only in that case). A PyPI spec such as "divsel==0.1.0"
+          measures the published wheels with no compiler on the runner.
+        type: string
+        default: "."
 
 concurrency:
   group: install-matrix-${{ github.ref }}
@@ -44,6 +56,7 @@ jobs:
           python-version: ${{ matrix.python }}
 
       - name: Rust toolchain (divsel builds from source via maturin)
+        if: ${{ (inputs.divsel_spec || '.') == '.' }}
         uses: dtolnay/rust-toolchain@stable
 
       - name: Record interpreter
@@ -65,10 +78,10 @@ jobs:
         shell: bash
         run: bash .github/scripts/install_cell.sh gist-sampling "git+https://github.com/musubi-labs/gist-sampling" gist_sampling install-cells
 
-      - name: divsel (this checkout, pip install .)
+      - name: divsel (${{ inputs.divsel_spec || 'this checkout, pip install .' }})
         continue-on-error: true
         shell: bash
-        run: bash .github/scripts/install_cell.sh divsel "." divsel install-cells
+        run: bash .github/scripts/install_cell.sh divsel "${{ inputs.divsel_spec || '.' }}" divsel install-cells
 
       - name: Show this runner's cells
         if: always()
