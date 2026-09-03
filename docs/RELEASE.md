@@ -309,7 +309,7 @@ and regeneration **rewrites the whole file**. Prefer editing the TOML.
 But the file is **not** purely generated, and the difference is
 release-breaking. `.github/workflows/release.yml:13-23` lists four local
 changes the generator has no configuration key for. Regeneration silently
-discards all three; **re-apply them every time**, and diff the result before
+discards all four; **re-apply them every time**, and diff the result before
 committing:
 
 1. **`name: release`**, not the generator's `name: CI` — which collided with
