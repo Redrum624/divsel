@@ -81,7 +81,10 @@ jobs:
       - name: divsel (${{ inputs.divsel_spec || 'this checkout, pip install .' }})
         continue-on-error: true
         shell: bash
-        run: bash .github/scripts/install_cell.sh divsel "${{ inputs.divsel_spec || '.' }}" divsel install-cells
+        env:
+          # The input reaches the shell as a variable, never as script text (script injection).
+          DIVSEL_SPEC: ${{ inputs.divsel_spec || '.' }}
+        run: bash .github/scripts/install_cell.sh divsel "$DIVSEL_SPEC" divsel install-cells
 
       - name: Show this runner's cells
         if: always()
