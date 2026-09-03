@@ -2,9 +2,8 @@
 
 **Diverse subset selection that actually has a guarantee.** A native (Rust) implementation of **GIST** — max-min diversification with submodular utility — with Python bindings that are zero-copy for `metric="euclidean"` (the default, `metric="cosine"`, makes exactly one L2-normalised copy).
 
-> Status: **0.1.0 — release candidate; publish pending.** Everything below is built and
-> tested; the crates.io / PyPI publish steps are listed in [`docs/RELEASE.md`](https://github.com/Redrum624/divsel/blob/main/docs/RELEASE.md).
-> Changes: [`CHANGELOG.md`](https://github.com/Redrum624/divsel/blob/main/CHANGELOG.md).
+> Status: **0.1.0**, the first release. Changes: [`CHANGELOG.md`](https://github.com/Redrum624/divsel/blob/main/CHANGELOG.md);
+> how a release is cut: [`docs/RELEASE.md`](https://github.com/Redrum624/divsel/blob/main/docs/RELEASE.md).
 
 ## Install
 
@@ -13,8 +12,8 @@ pip install divsel      # Python: one abi3 wheel covers CPython 3.11-3.14 per pl
 cargo add divsel        # Rust: the core crate
 ```
 
-Until 0.1.0 lands on PyPI/crates.io, install from a checkout instead: `pip install .`
-(needs a Rust toolchain, 1.83+). Free-threaded CPython 3.14t is served by a separate
+From a checkout instead: `pip install .` (needs a Rust toolchain, 1.83+).
+Free-threaded CPython 3.14t is served by a separate
 version-specific `cp314t` wheel, not the abi3 one. Adapter extras:
 `pip install "divsel[langchain]"` / `"divsel[llamaindex]"`.
 
