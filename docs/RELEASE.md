@@ -7,9 +7,11 @@
 > Release job was re-run alone once it was). crates.io: `cargo publish -p divsel` by the owner at
 > 17:41:56Z; the published `.crate` (sha256 `ebbff30c…`) is byte-identical to `cargo package` at `5860457`.
 > GitHub Release v0.1.0 carries all 13 files plus the installability matrix; `install-matrix.yml` re-ran
-> green against the tag ([33785213423](https://github.com/Redrum624/divsel/actions/runs/33785213423)).
-> Still open from step 8 + step 9: configure crates.io Trusted Publishing for 0.1.1+, revoke the
-> `publish-new` token, refresh the assembled table in `docs/benchmarks/README.md` from that re-run.
+> green against the tag ([33785213423](https://github.com/Redrum624/divsel/actions/runs/33785213423)) —
+> but its 12 divsel cells still installed `spec: "."` (the checkout), so it does **not** yet measure the
+> published wheel; the workflow needs a `divsel==0.1.0` spec for that. Still open from step 8 + step 9:
+> configure crates.io Trusted Publishing for 0.1.1+, revoke the `publish-new` token, point the matrix at
+> the PyPI wheel and refresh the assembled table in `docs/benchmarks/README.md`.
 
 Everything that could be done without a registry credential has been done. What
 remains is the credentialed and outward-facing part: publishing to two
